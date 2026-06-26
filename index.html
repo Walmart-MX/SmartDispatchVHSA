@@ -1,0 +1,3370 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SmartDispatch · CeDis VHSA</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════════
+   DESIGN TOKENS
+   Palette: deep navy / signal amber / slate grays
+   Signal language: navy=brand, amber=action/warn, 
+   green=success, red=critical, blue=info
+═══════════════════════════════════════════════════════ */
+:root {
+  /* Brand */
+  --navy:       #00204A;
+  --navy-dk:    #001530;
+  --navy-md:    #0A3060;
+  --amber:      #F59E0B;
+  --amber-dk:   #D97706;
+  --amber-lt:   #FEF3C7;
+  --amber-bd:   #FCD34D;
+
+  /* Surfaces */
+  --bg:         #F1F4F9;
+  --surface:    #FFFFFF;
+  --surface2:   #F7F9FC;
+  --surface3:   #EEF2F8;
+
+  /* Borders */
+  --border:     #E2E8F2;
+  --border2:    #CBD5E8;
+
+  /* Text */
+  --text:       #0F172A;
+  --text2:      #334155;
+  --text3:      #64748B;
+  --text4:      #94A3B8;
+
+  /* Semantics */
+  --green:      #059669;
+  --green-bg:   #ECFDF5;
+  --green-bd:   #6EE7B7;
+  --red:        #DC2626;
+  --red-bg:     #FEF2F2;
+  --red-bd:     #FCA5A5;
+  --blue:       #2563EB;
+  --blue-bg:    #EFF6FF;
+  --blue-bd:    #93C5FD;
+  --orange:     #EA580C;
+  --orange-bg:  #FFF7ED;
+  --orange-bd:  #FDBA74;
+  --purple:     #7C3AED;
+  --purple-bg:  #F5F3FF;
+  --purple-bd:  #C4B5FD;
+
+  /* Shadows */
+  --shadow-xs:  0 1px 2px rgba(0,20,60,.06);
+  --shadow-sm:  0 1px 4px rgba(0,20,60,.08), 0 0 1px rgba(0,20,60,.04);
+  --shadow-md:  0 4px 16px rgba(0,20,60,.10), 0 1px 4px rgba(0,20,60,.06);
+  --shadow-lg:  0 12px 40px rgba(0,20,60,.14), 0 2px 8px rgba(0,20,60,.08);
+
+  /* Geometry */
+  --r:          8px;
+  --r-lg:       12px;
+  --r-xl:       16px;
+}
+
+[data-theme="dark"] {
+  --bg:         #080E1A;
+  --surface:    #0F1927;
+  --surface2:   #162035;
+  --surface3:   #1C2940;
+  --border:     #1E3050;
+  --border2:    #263A58;
+  --text:       #E2EAF6;
+  --text2:      #8BA3C4;
+  --text3:      #4A6280;
+  --text4:      #2E4060;
+  --amber-lt:   #1C1400;
+  --green-bg:   #032015;
+  --red-bg:     #1C0404;
+  --blue-bg:    #040C24;
+  --orange-bg:  #1A0C00;
+  --purple-bg:  #0E0626;
+  --shadow-xs:  0 1px 2px rgba(0,0,0,.3);
+  --shadow-sm:  0 1px 4px rgba(0,0,0,.4);
+  --shadow-md:  0 4px 16px rgba(0,0,0,.5);
+  --shadow-lg:  0 12px 40px rgba(0,0,0,.6);
+}
+
+/* ── RESET ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+button { font-family: inherit; cursor: pointer; }
+input, textarea { font-family: inherit; }
+
+/* ── TOPBAR ── */
+.topbar {
+  position: fixed; top: 0; left: 0; right: 0; height: 54px;
+  background: var(--navy);
+  display: flex; align-items: center; padding: 0 24px; gap: 12px;
+  z-index: 100; box-shadow: 0 2px 16px rgba(0,0,0,.25);
+}
+[data-theme="dark"] .topbar { background: #030810; border-bottom: 1px solid var(--border); }
+.tb-logo { display: flex; align-items: center; gap: 9px; text-decoration: none; }
+.tb-logo-mark {
+  width: 30px; height: 30px; background: var(--amber); border-radius: 7px;
+  display: flex; align-items: center; justify-content: center; font-size: 16px;
+  flex-shrink: 0;
+}
+.tb-wordmark { font-size: 14px; font-weight: 700; color: #fff; letter-spacing: -.02em; }
+.tb-wordmark span { color: var(--amber); }
+.tb-divider { width: 1px; height: 18px; background: rgba(255,255,255,.15); }
+.tb-context { font-size: 11px; color: rgba(255,255,255,.4); letter-spacing: .01em; }
+.tb-spacer { flex: 1; }
+
+/* Health rail — the signature element */
+.health-rail {
+  display: flex; align-items: center; gap: 6px;
+  background: rgba(255,255,255,.07);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 8px; padding: 4px 10px; gap: 10px;
+  transition: background .2s;
+}
+.health-pill {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; color: rgba(255,255,255,.5);
+}
+.health-pill-val {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px; font-weight: 600; color: rgba(255,255,255,.85);
+}
+.health-pill-val.ok    { color: #34D399; }
+.health-pill-val.warn  { color: var(--amber); }
+.health-pill-val.crit  { color: #F87171; }
+.health-pill-val.idle  { color: rgba(255,255,255,.3); }
+.health-sep { width: 1px; height: 14px; background: rgba(255,255,255,.12); }
+
+/* Topbar responsive */
+@media (max-width: 1200px) {
+  .health-rail { gap: 6px; padding: 4px 8px; }
+  .health-pill { gap: 3px; }
+  .health-pill > span:first-child { display: none; }
+  .tb-context { display: none; }
+}
+@media (max-width: 900px) {
+  .health-rail { display: none; }
+}
+
+/* User chip */
+.tb-user {
+  display: flex; align-items: center; gap: 7px;
+  background: rgba(255,255,255,.09); border: 1px solid rgba(255,255,255,.12);
+  border-radius: 8px; padding: 4px 10px; cursor: pointer;
+  transition: background .15s;
+}
+.tb-user:hover { background: rgba(255,255,255,.15); }
+.tb-user-label { font-size: 10px; font-weight: 600; color: rgba(255,255,255,.4); letter-spacing: .06em; text-transform: uppercase; }
+.tb-user-name { font-size: 11px; font-weight: 600; color: rgba(255,255,255,.8); }
+.tb-theme-btn {
+  background: rgba(255,255,255,.09); border: 1px solid rgba(255,255,255,.12);
+  border-radius: 8px; padding: 5px 9px; font-size: 14px; color: #fff;
+  transition: background .15s; flex-shrink: 0;
+}
+.tb-theme-btn:hover { background: rgba(255,255,255,.18); }
+
+/* ── LAYOUT ── */
+.app-shell { padding-top: 54px; min-height: 100vh; }
+.page { max-width: 1440px; margin: 0 auto; padding: 16px 20px 40px; }
+
+/* ── PIPELINE STRIP ── */
+/* The three-step pipeline is the single source of workflow state */
+.pipeline {
+  display: grid; grid-template-columns: 1fr auto 1fr auto 1fr;
+  gap: 0; margin-bottom: 20px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-lg); overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.pipe-step {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px; position: relative;
+  transition: background .15s;
+  cursor: default;
+  min-width: 0;
+}
+@media (max-width: 700px) {
+  .pipe-desc, .pipe-stat { display: none; }
+  .pipe-step { padding: 10px 12px; }
+}
+.pipe-step.active   { background: var(--blue-bg); }
+.pipe-step.done     { background: var(--green-bg); }
+.pipe-step.optional { background: var(--surface); }
+
+.pipe-num {
+  width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700;
+  background: var(--surface3); color: var(--text3);
+  border: 1.5px solid var(--border2);
+  transition: all .2s;
+}
+.pipe-step.active .pipe-num   { background: var(--blue); color: #fff; border-color: var(--blue); }
+.pipe-step.done .pipe-num     { background: var(--green); color: #fff; border-color: var(--green); }
+.pipe-step.optional .pipe-num { background: var(--purple-bg); color: var(--purple); border-color: var(--purple-bd); }
+
+.pipe-info { flex: 1; min-width: 0; }
+.pipe-title { font-size: 12px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pipe-desc  { font-size: 10px; color: var(--text3); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pipe-stat  { 
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  padding: 2px 8px; border-radius: 20px;
+  background: var(--surface3); color: var(--text3);
+  border: 1px solid var(--border); white-space: nowrap; flex-shrink: 0;
+}
+.pipe-step.done .pipe-stat   { background: var(--green-bg); color: var(--green); border-color: var(--green-bd); }
+.pipe-step.active .pipe-stat { background: var(--blue-bg); color: var(--blue); border-color: var(--blue-bd); }
+
+.pipe-arrow {
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; color: var(--border2); font-size: 18px; font-weight: 300;
+  background: var(--surface); flex-shrink: 0;
+  border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+}
+
+/* ── MAIN GRID ── */
+.main-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .main-grid { grid-template-columns: minmax(280px, 320px) minmax(0, 1fr); }
+}
+@media (max-width: 860px) {
+  .main-grid { grid-template-columns: 1fr; }
+}
+
+/* ── CARDS ── */
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+.card-hdr {
+  display: flex; align-items: center; gap: 10px;
+  padding: 13px 16px; border-bottom: 1px solid var(--border);
+}
+.card-hdr-icon { font-size: 16px; flex-shrink: 0; }
+.card-hdr-title { font-size: 13px; font-weight: 700; color: var(--text); }
+.card-hdr-desc  { font-size: 11px; color: var(--text3); margin-top: 1px; }
+.card-hdr-right { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.card-body { padding: 14px 16px; }
+.card-body-sm { padding: 10px 16px; }
+
+/* ── LEFT SIDEBAR — Input panel ── */
+.sidebar { grid-column: 1; display: flex; flex-direction: column; gap: 12px; }
+
+/* ── DROP ZONES ── */
+.dz {
+  border: 2px dashed var(--border2); border-radius: var(--r);
+  padding: 20px 14px; text-align: center;
+  cursor: pointer; transition: all .18s; position: relative;
+  background: var(--surface2);
+}
+.dz:hover, .dz.drag { border-color: var(--blue); background: var(--blue-bg); }
+.dz.done { border-style: solid; border-color: var(--green-bd); background: var(--green-bg); }
+.dz.done:hover { border-color: var(--green); background: var(--green-bg); }
+.dz input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+.dz-ico { font-size: 24px; margin-bottom: 6px; display: block; }
+.dz-text { font-size: 12px; font-weight: 600; color: var(--text2); }
+.dz-text strong { color: var(--blue); }
+.dz.done .dz-text strong { color: var(--green); }
+.dz-sub { font-size: 11px; color: var(--text3); margin-top: 2px; }
+.dz-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  margin-top: 8px; padding: 2px 10px; border-radius: 20px;
+  background: var(--surface3); color: var(--text3);
+  border: 1px solid var(--border); transition: all .2s;
+}
+.dz.done .dz-badge { background: var(--green-bg); color: var(--green); border-color: var(--green-bd); }
+
+/* ── PASTE PANEL ── */
+.paste-cols {
+  display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.pcol {
+  font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 600;
+  padding: 2px 7px; border-radius: 4px;
+}
+.pcol-key { background: var(--blue-bg); color: var(--blue); border: 1px solid var(--blue-bd); }
+.pcol-val { background: var(--purple-bg); color: var(--purple); border: 1px solid var(--purple-bd); }
+
+.paste-ta {
+  width: 100%; background: var(--surface2); border: 1.5px solid var(--border2);
+  border-radius: var(--r); color: var(--text);
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  padding: 9px 12px; resize: vertical; min-height: 72px;
+  outline: none; transition: border-color .15s, box-shadow .15s;
+  line-height: 1.6; display: block;
+}
+.paste-ta:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-bg); }
+.paste-ta::placeholder { color: var(--text4); }
+.paste-actions { display: flex; gap: 7px; margin-top: 8px; }
+.paste-status { font-family: 'JetBrains Mono', monospace; font-size: 10px; margin-top: 6px; min-height: 14px; }
+.paste-status.ok   { color: var(--green); }
+.paste-status.err  { color: var(--red); }
+.paste-status.proc { color: var(--amber-dk); }
+
+.paste-preview { margin-top: 8px; overflow-x: auto; max-height: 90px; border: 1px solid var(--border); border-radius: var(--r); display: none; }
+.paste-preview.on { display: block; }
+.paste-preview table { font-family: 'JetBrains Mono', monospace; font-size: 9px; border-collapse: collapse; width: 100%; }
+.paste-preview th { background: var(--surface2); color: var(--purple); padding: 5px 10px; text-align: left; position: sticky; top: 0; border-bottom: 1px solid var(--border); }
+.paste-preview td { padding: 4px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+
+/* ── BUTTONS ── */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; border: none; border-radius: var(--r);
+  padding: 8px 16px; cursor: pointer; transition: all .15s; white-space: nowrap;
+  line-height: 1;
+}
+.btn:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.07); }
+.btn:active:not(:disabled) { transform: none; filter: brightness(.97); }
+.btn:disabled { opacity: .35; cursor: not-allowed; transform: none !important; }
+.btn-primary   { background: var(--blue); color: #fff; }
+.btn-success   { background: var(--green); color: #fff; }
+.btn-amber     { background: var(--amber); color: #1A0A00; font-weight: 700; }
+.btn-ghost     { background: var(--surface2); color: var(--text2); border: 1px solid var(--border); }
+.btn-ghost:hover:not(:disabled) { background: var(--surface3); }
+.btn-danger    { background: var(--red); color: #fff; }
+.btn-danger-outline { background: transparent; color: var(--red); border: 1px solid var(--red); }
+.btn-sm { padding: 5px 11px; font-size: 11px; }
+.btn-xs { padding: 3px 8px; font-size: 10px; }
+
+/* ── RIGHT PANEL ── */
+.right-panel { grid-column: 2; display: flex; flex-direction: column; gap: 14px; }
+@media (max-width: 960px) { .right-panel { grid-column: 1; } }
+
+/* ── RESULT STATS STRIP ── */
+.stats-strip {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+@media (max-width: 640px) {
+  .stats-strip { grid-template-columns: repeat(2, 1fr); }
+  .stats-strip .stat-cell:nth-child(2) { border-right: none; }
+  .stats-strip .stat-cell:nth-child(3) { border-top: 1px solid var(--border); }
+}
+.stat-cell {
+  padding: 14px 16px; border-right: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px;
+}
+.stat-cell:last-child { border-right: none; }
+.stat-ico { font-size: 18px; flex-shrink: 0; }
+.stat-num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 22px; font-weight: 800; color: var(--text); line-height: 1;
+}
+.stat-num.green  { color: var(--green); }
+.stat-num.orange { color: var(--orange); }
+.stat-num.blue   { color: var(--blue); }
+.stat-num.purple { color: var(--purple); }
+.stat-lbl { font-size: 10px; color: var(--text3); margin-top: 2px; }
+.stat-sub { font-size: 10px; font-weight: 600; margin-top: 1px; }
+.stat-sub.ok   { color: var(--green); }
+.stat-sub.warn { color: var(--orange); }
+.stat-sub.idle { color: var(--text4); }
+
+/* ── PROGRESS BAR ── */
+.prog-bar { display: none; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--navy); }
+.prog-bar.on { display: block; }
+.prog-bar-top { display: flex; justify-content: space-between; margin-bottom: 5px; }
+.prog-bar-label { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: rgba(255,255,255,.6); }
+.prog-bar-pct   { font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; color: var(--amber); }
+.prog-track { height: 4px; background: rgba(255,255,255,.15); border-radius: 4px; overflow: hidden; }
+.prog-fill  { height: 100%; width: 0; background: var(--amber); border-radius: 4px; transition: width .2s; }
+
+/* ── ERR LOG ── */
+.err-log { display: none; }
+.err-log.on { display: block; }
+.err-log-inner {
+  margin: 0 16px 12px; padding: 10px 12px; border-radius: var(--r);
+  background: var(--red-bg); border: 1px solid var(--red-bd);
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: var(--red); max-height: 60px; overflow-y: auto; line-height: 1.7;
+}
+
+/* ── TABLE ── */
+.legend-row {
+  display: none; align-items: center; gap: 12px;
+  padding: 8px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.legend-row.on { display: flex; }
+.leg-label { font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--text4); }
+.leg { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--text3); }
+.leg-dot { width: 7px; height: 7px; border-radius: 2px; }
+.table-wrap { overflow-x: auto; max-height: min(480px, calc(100vh - 420px)); overflow-y: auto; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.data-table thead tr { background: var(--navy); position: sticky; top: 0; z-index: 2; }
+[data-theme="dark"] .data-table thead tr { background: #030810; }
+.data-table th {
+  font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .07em;
+  text-transform: uppercase; padding: 8px 10px; text-align: left;
+  white-space: nowrap; color: rgba(255,255,255,.4); font-weight: 500;
+}
+.data-table th.h-key  { color: var(--amber); }
+.data-table th.h-pdf  { color: #6EE7B7; }
+.data-table th.h-desp { color: #C4B5FD; }
+.data-table th.h-fill { color: #93C5FD; }
+.data-table tbody tr:nth-child(even) { background: var(--surface2); }
+.data-table tbody tr:hover { background: var(--blue-bg); }
+.data-table td {
+  padding: 5px 10px; border-bottom: 1px solid var(--border);
+  vertical-align: middle; white-space: nowrap;
+  font-family: 'JetBrains Mono', monospace;
+}
+.c-key  { color: var(--amber-dk); font-weight: 700; }
+.c-pdf  { color: var(--green); font-weight: 500; }
+.c-desp { color: var(--purple); font-weight: 500; }
+.c-fill { color: var(--blue); font-weight: 500; }
+.no-data { color: var(--border2); font-style: italic; font-size: 10px; }
+
+/* ── EMPTY STATE ── */
+.empty-state {
+  text-align: center; padding: 52px 24px;
+}
+.empty-ico   { font-size: 36px; opacity: .2; margin-bottom: 12px; }
+.empty-title { font-size: 14px; font-weight: 700; color: var(--text2); margin-bottom: 6px; }
+.empty-desc  { font-size: 12px; color: var(--text3); line-height: 1.6; max-width: 300px; margin: 0 auto; }
+
+/* ── ACTION BAR ── */
+.action-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.action-bar-sep { width: 1px; height: 22px; background: var(--border); }
+.count-badge {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 20px; padding: 3px 10px; color: var(--text3);
+}
+.count-badge strong { color: var(--text); }
+.count-badge.ok strong   { color: var(--green); }
+.count-badge.warn strong { color: var(--orange); }
+.count-badge.info strong { color: var(--purple); }
+
+/* ── SVE (Smart Validation Engine) ── */
+.sve-panel { display: none; }
+.sve-panel.on { display: block; }
+
+.sve-header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 14px 18px; border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.sve-shield-wrap {
+  width: 40px; height: 40px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; flex-shrink: 0; transition: all .3s;
+  background: var(--surface3);
+}
+.sve-shield-wrap.ok   { background: var(--green-bg); }
+.sve-shield-wrap.warn { background: var(--orange-bg); }
+.sve-shield-wrap.crit { background: var(--red-bg); }
+.sve-title-block { flex: 1; min-width: 0; }
+.sve-main-title { font-size: 13px; font-weight: 700; color: var(--text); }
+.sve-subtitle   { font-size: 11px; color: var(--text3); margin-top: 2px; }
+
+/* Quality ring */
+.sve-ring-wrap  { display: flex; align-items: center; gap: 14px; }
+.sve-ring       { position: relative; width: 68px; height: 68px; flex-shrink: 0; }
+.sve-ring svg   { transform: rotate(-90deg); }
+.ring-track     { stroke: var(--border2); fill: none; stroke-width: 6; }
+.ring-fill      { fill: none; stroke-width: 6; stroke-linecap: round; transition: stroke-dashoffset .7s cubic-bezier(.4,0,.2,1), stroke .3s; }
+.sve-ring-label { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.ring-pct       { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 800; line-height: 1; color: var(--text); }
+.ring-sub       { font-size: 8px; font-weight: 700; color: var(--text3); letter-spacing: .05em; margin-top: 1px; }
+
+/* Quality tiers */
+.q-100  .ring-fill, .q-high .ring-fill { stroke: var(--green); }
+.q-med  .ring-fill { stroke: var(--amber); }
+.q-low  .ring-fill { stroke: var(--red); }
+.q-100  .ring-pct, .q-high .ring-pct { color: var(--green); }
+.q-med  .ring-pct { color: var(--amber-dk); }
+.q-low  .ring-pct { color: var(--red); }
+
+.sve-counters { display: flex; gap: 6px; flex-wrap: wrap; }
+.sve-count {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 6px 12px; border-radius: var(--r);
+  background: var(--surface3); border: 1px solid var(--border);
+  min-width: 54px;
+}
+.sve-count-val  { font-family: 'JetBrains Mono', monospace; font-size: 16px; font-weight: 800; line-height: 1; }
+.sve-count-val.crit { color: var(--red); }
+.sve-count-val.warn { color: var(--orange); }
+.sve-count-val.info { color: var(--blue); }
+.sve-count-val.pass { color: var(--green); }
+.sve-count-lbl  { font-size: 9px; color: var(--text3); margin-top: 3px; font-weight: 500; }
+
+/* Alert groups */
+.sve-group { border-top: 1px solid var(--border); }
+.sve-group-hdr {
+  display: flex; align-items: center; gap: 10px; padding: 10px 18px;
+  cursor: pointer; user-select: none; transition: background .12s;
+}
+.sve-group-hdr:hover { background: var(--surface2); }
+.sev-tag {
+  font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700;
+  padding: 2px 8px; border-radius: 20px; letter-spacing: .06em; text-transform: uppercase;
+  flex-shrink: 0;
+}
+.sev-crit .sev-tag { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-bd); }
+.sev-warn .sev-tag { background: var(--orange-bg); color: var(--orange); border: 1px solid var(--orange-bd); }
+.sev-info .sev-tag { background: var(--blue-bg); color: var(--blue); border: 1px solid var(--blue-bd); }
+.sve-group-name  { font-size: 11px; font-weight: 600; color: var(--text); flex: 1; }
+.sve-group-count { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text3); background: var(--surface3); border: 1px solid var(--border); border-radius: 20px; padding: 2px 8px; }
+.sve-group-chev  { font-size: 11px; color: var(--text3); transition: transform .2s; }
+.sve-group.open .sve-group-chev { transform: rotate(180deg); }
+.sve-group-body  { display: none; border-top: 1px solid var(--border); }
+.sve-group.open .sve-group-body { display: block; }
+
+.sve-issue {
+  display: grid; grid-template-columns: 22px 1fr; gap: 8px 10px;
+  padding: 9px 18px; border-bottom: 1px solid var(--border); align-items: start;
+  transition: background .1s;
+}
+.sve-issue:last-child { border-bottom: none; }
+.sve-issue:hover { background: var(--surface2); }
+.sve-issue-ico  { font-size: 13px; padding-top: 1px; }
+.sve-issue-desc { font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 3px; }
+.sve-issue-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.sve-tag-ruta   { font-family: 'JetBrains Mono', monospace; font-size: 9px; background: var(--surface3); color: var(--text2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
+.sve-tag-field  { font-family: 'JetBrains Mono', monospace; font-size: 9px; border-radius: 4px; padding: 1px 6px; }
+.sev-crit .sve-tag-field { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-bd); }
+.sev-warn .sve-tag-field { background: var(--orange-bg); color: var(--orange); border: 1px solid var(--orange-bd); }
+.sev-info .sve-tag-field { background: var(--blue-bg); color: var(--blue); border: 1px solid var(--blue-bd); }
+.sve-tag-extra  { font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--text3); }
+.sve-issue-action { font-size: 10px; color: var(--text3); font-style: italic; margin-top: 3px; }
+
+.sve-empty-msg {
+  text-align: center; padding: 24px; color: var(--text3);
+  font-size: 11px; border-top: 1px solid var(--border);
+}
+
+/* Export gate */
+.export-gate {
+  display: none; padding: 12px 18px;
+  align-items: center; gap: 12px; flex-wrap: wrap;
+  border-top: 1px solid var(--border);
+  background: var(--red-bg); border-radius: 0 0 var(--r-lg) var(--r-lg);
+}
+.export-gate.on  { display: flex; }
+.export-gate.forced { background: var(--orange-bg); }
+.gate-msg { flex: 1; min-width: 200px; }
+.gate-msg strong { display: block; font-size: 12px; font-weight: 700; color: var(--red); margin-bottom: 2px; }
+.export-gate.forced .gate-msg strong { color: var(--orange); }
+.gate-msg span { font-size: 11px; color: var(--text2); }
+
+/* ── CATALOG ── */
+.cat-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); overflow: hidden; }
+.cat-toggle {
+  display: flex; align-items: center; gap: 10px; padding: 13px 16px;
+  cursor: pointer; user-select: none; transition: background .12s;
+}
+.cat-toggle:hover { background: var(--surface2); }
+.cat-badge-count {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
+  background: var(--green-bg); color: var(--green); border: 1px solid var(--green-bd);
+  border-radius: 20px; padding: 2px 9px; margin-left: auto;
+}
+.cat-chev { font-size: 11px; color: var(--text3); transition: transform .2s; }
+.cat-panel.open .cat-chev { transform: rotate(180deg); }
+.cat-body { display: none; border-top: 1px solid var(--border); padding: 14px 16px; }
+.cat-panel.open .cat-body { display: block; }
+.cat-add-row { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.cat-input {
+  background: var(--surface2); border: 1.5px solid var(--border2); border-radius: var(--r);
+  color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  padding: 6px 10px; outline: none; transition: border-color .15s;
+}
+.cat-input:focus { border-color: var(--blue); }
+.cat-input::placeholder { color: var(--text4); }
+.cat-actions { display: flex; gap: 6px; margin-left: auto; align-items: center; }
+.cat-import-btn { position: relative; overflow: hidden; }
+.cat-import-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.cat-table-wrap { max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r); }
+.cat-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.cat-table th { font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .07em; text-transform: uppercase; padding: 6px 12px; text-align: left; background: var(--surface2); color: var(--text3); position: sticky; top: 0; border-bottom: 1px solid var(--border); }
+.cat-table td { padding: 5px 12px; border-bottom: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; }
+.cat-table tr:last-child td { border-bottom: none; }
+.cat-table tr:hover td { background: var(--surface2); }
+.td-op  { color: var(--text2); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.td-lic { color: var(--green); font-weight: 600; }
+.btn-del { background: none; border: none; cursor: pointer; color: var(--text4); font-size: 12px; padding: 2px 5px; border-radius: 4px; transition: color .15s; }
+.btn-del:hover { color: var(--red); }
+.cat-empty { text-align: center; padding: 20px; color: var(--text3); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+.cat-status { font-family: 'JetBrains Mono', monospace; font-size: 10px; margin-top: 8px; }
+.cat-status.ok  { color: var(--green); }
+.cat-status.err { color: var(--red); }
+
+/* ── MODAL ── */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,10,30,.7);
+  backdrop-filter: blur(6px); z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.modal-overlay.hidden { display: none; }
+.modal-box {
+  background: var(--surface); border-radius: var(--r-xl);
+  padding: 32px 36px; width: 400px; max-width: 100%;
+  box-shadow: var(--shadow-lg); border: 1px solid var(--border);
+}
+.modal-logo { display: flex; align-items: center; gap: 9px; margin-bottom: 22px; }
+.modal-logo-mark {
+  width: 36px; height: 36px; background: var(--amber); border-radius: 8px;
+  display: flex; align-items: center; justify-content: center; font-size: 18px;
+}
+.modal-logo-text { font-size: 14px; font-weight: 700; color: var(--text); }
+.modal-logo-text span { color: var(--amber-dk); }
+.modal-title { font-size: 18px; font-weight: 800; color: var(--text); margin-bottom: 4px; }
+.modal-sub   { font-size: 12px; color: var(--text3); margin-bottom: 20px; line-height: 1.6; }
+.modal-field-label { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--text3); margin-bottom: 5px; }
+.modal-input {
+  width: 100%; background: var(--surface2); border: 1.5px solid var(--border2);
+  border-radius: var(--r); color: var(--text); font-family: 'Inter', sans-serif;
+  font-size: 14px; padding: 10px 14px; outline: none; transition: all .15s; margin-bottom: 4px;
+}
+.modal-input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-bg); }
+.modal-input::placeholder { color: var(--text4); }
+.modal-hint { font-size: 11px; color: var(--text3); margin-bottom: 18px; }
+.theme-opts { display: flex; gap: 8px; margin-bottom: 18px; }
+.theme-opt {
+  flex: 1; border: 2px solid var(--border2); border-radius: var(--r);
+  padding: 12px 8px; text-align: center; cursor: pointer; transition: all .15s;
+  background: var(--surface2);
+}
+.theme-opt:hover { border-color: var(--blue); }
+.theme-opt.selected { border-color: var(--blue); background: var(--blue-bg); }
+.theme-opt-ico   { font-size: 20px; margin-bottom: 4px; }
+.theme-opt-label { font-size: 11px; font-weight: 600; color: var(--text2); }
+.modal-btn { width: 100%; background: var(--navy); color: #fff; border: none; border-radius: var(--r); font-size: 14px; font-weight: 600; padding: 12px; cursor: pointer; transition: background .15s; }
+.modal-btn:hover { background: var(--navy-md); }
+.modal-skip { display: block; text-align: center; margin-top: 10px; font-size: 11px; color: var(--text3); background: none; border: none; cursor: pointer; text-decoration: underline; }
+
+/* ── INLINE EDIT SYSTEM ── */
+.row-highlight {
+  outline: 2px solid var(--amber) !important;
+  background: var(--amber-lt) !important;
+  animation: rowPulse .6s ease 2;
+}
+@keyframes rowPulse {
+  0%,100% { background: var(--amber-lt); }
+  50%      { background: #FEF08A; }
+}
+
+/* Edit drawer */
+.edit-drawer {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 150;
+  background: var(--surface); border-top: 2px solid var(--amber);
+  box-shadow: 0 -8px 40px rgba(0,20,60,.18);
+  transform: translateY(100%); transition: transform .3s cubic-bezier(.4,0,.2,1);
+  max-height: 75vh; display: flex; flex-direction: column;
+}
+.edit-drawer.open { transform: translateY(0); }
+.edit-drawer-hdr {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 20px; border-bottom: 1px solid var(--border);
+  background: var(--surface); flex-shrink: 0;
+}
+.edit-drawer-title { font-size: 13px; font-weight: 700; color: var(--text); flex: 1; }
+.edit-drawer-ruta  { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--amber-dk); background: var(--amber-lt); border: 1px solid var(--amber-bd); border-radius: 6px; padding: 2px 10px; }
+.edit-drawer-body  { padding: 16px 20px; overflow-y: auto; flex: 1; }
+.edit-fields-grid  { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.edit-field        { display: flex; flex-direction: column; gap: 4px; }
+.edit-field-label  { font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--text3); }
+.edit-field-label.crit { color: var(--red); }
+.edit-field-input  {
+  background: var(--surface2); border: 1.5px solid var(--border2);
+  border-radius: var(--r); color: var(--text);
+  font-family: 'JetBrains Mono', monospace; font-size: 12px;
+  padding: 7px 10px; outline: none; transition: border-color .15s;
+}
+.edit-field-input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-bg); }
+.edit-field-input.field-crit { border-color: var(--red-bd); background: var(--red-bg); }
+.edit-field-input.field-crit:focus { border-color: var(--red); box-shadow: 0 0 0 3px var(--red-bg); }
+.edit-drawer-ftr {
+  display: flex; align-items: center; gap: 10px; padding: 12px 20px;
+  border-top: 1px solid var(--border); background: var(--surface2); flex-shrink: 0;
+}
+.edit-change-badge {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  background: var(--amber-lt); color: var(--amber-dk);
+  border: 1px solid var(--amber-bd); border-radius: 20px; padding: 2px 9px;
+}
+.btn-locate {
+  font-family: 'Inter', sans-serif; font-size: 10px; font-weight: 600;
+  background: var(--surface3); color: var(--text2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 9px; cursor: pointer; transition: all .15s;
+  white-space: nowrap;
+}
+.btn-locate:hover { background: var(--amber-lt); color: var(--amber-dk); border-color: var(--amber-bd); }
+
+/* ── SECTION LABEL ── */
+.sec-label {
+  font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--text4);
+  margin-bottom: 8px; display: flex; align-items: center; gap: 8px;
+}
+.sec-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+/* ── FULLWIDTH BOTTOM SECTION ── */
+.full-section { grid-column: 1 / -1; }
+
+/* ── EXPORT GATE — warn-only state ── */
+.export-gate.warn-only {
+  background: var(--amber-lt);
+  border-top-color: var(--amber-bd);
+}
+.export-gate.warn-only .gate-msg strong { color: var(--amber-dk); }
+
+/* ── WARN CONFIRM MODAL ── */
+.warn-modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,10,30,.55);
+  backdrop-filter: blur(4px); z-index: 300;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.warn-modal-overlay.hidden { display: none; }
+.warn-modal-box {
+  background: var(--surface); border: 1px solid var(--amber-bd);
+  border-top: 3px solid var(--amber); border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+  padding: 28px 32px; width: 420px; max-width: 100%;
+}
+.warn-modal-icon  { font-size: 28px; margin-bottom: 10px; }
+.warn-modal-title {
+  font-size: 15px; font-weight: 800; color: var(--text); margin-bottom: 6px;
+}
+.warn-modal-body  {
+  font-size: 12px; color: var(--text2); line-height: 1.65;
+  margin-bottom: 20px;
+}
+.warn-modal-body strong { color: var(--amber-dk); }
+.warn-modal-actions { display: flex; gap: 10px; }
+.warn-modal-actions .btn { flex: 1; justify-content: center; }
+
+/* ── ROUTE PICKER (multi-match selector for duplicate marchamo / ruta) ── */
+.route-picker-overlay {
+  position: fixed; inset: 0; background: rgba(0,10,30,.55);
+  backdrop-filter: blur(4px); z-index: 300;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.route-picker-overlay.hidden { display: none; }
+.route-picker-box {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-xl); box-shadow: var(--shadow-lg);
+  padding: 24px 28px; min-width: 300px; max-width: 420px; width: 100%;
+}
+.route-picker-title {
+  font-size: 13px; font-weight: 700; color: var(--text);
+  margin-bottom: 4px;
+}
+.route-picker-sub {
+  font-size: 11px; color: var(--text3); margin-bottom: 16px; line-height: 1.5;
+}
+.route-picker-sep {
+  height: 1px; background: var(--border); margin-bottom: 12px;
+}
+.route-picker-options { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.route-picker-opt {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--surface2); border: 1.5px solid var(--border2);
+  border-radius: var(--r); padding: 9px 14px; cursor: pointer;
+  transition: all .15s; font-size: 12px; font-weight: 600; color: var(--text);
+  text-align: left;
+}
+.route-picker-opt:hover { border-color: var(--amber); background: var(--amber-lt); color: var(--amber-dk); }
+.route-picker-opt-ruta {
+  font-family: 'JetBrains Mono', monospace; font-size: 13px;
+  font-weight: 700; color: var(--blue);
+}
+.route-picker-opt-sub { font-size: 10px; color: var(--text3); font-weight: 400; margin-top: 1px; }
+.route-picker-cancel {
+  width: 100%; background: none; border: 1px solid var(--border2);
+  border-radius: var(--r); padding: 8px; font-size: 11px;
+  color: var(--text3); cursor: pointer; transition: all .15s;
+  font-family: inherit;
+}
+.route-picker-cancel:hover { background: var(--surface2); color: var(--text); }
+</style>
+</head>
+<body>
+
+<!-- ── MODAL: Nombre + Tema ── -->
+<div class="modal-overlay hidden" id="nameModal">
+  <div class="modal-box">
+    <div class="modal-logo">
+      <div class="modal-logo-mark">🚛</div>
+      <div class="modal-logo-text"><span>Smart</span>Dispatch · CeDis VHSA</div>
+    </div>
+    <div class="modal-title" id="modalTitle">¡Bienvenido!</div>
+    <div class="modal-sub" id="modalSub">Configura tu sesión una sola vez. Esta información se guardará automáticamente.</div>
+    <div class="modal-field-label">Tu nombre</div>
+    <input class="modal-input" id="nameInput" type="text" placeholder="Ej. Eduardo García" maxlength="60" autocomplete="off">
+    <div class="modal-hint">Identifica quién realiza la captura en cada exportación.</div>
+    <div class="modal-field-label">Interfaz preferida</div>
+    <div class="theme-opts">
+      <div class="theme-opt selected" id="themeOptLight" data-theme="light">
+        <div class="theme-opt-ico">☀️</div>
+        <div class="theme-opt-label">Claro</div>
+      </div>
+      <div class="theme-opt" id="themeOptDark" data-theme="dark">
+        <div class="theme-opt-ico">🌙</div>
+        <div class="theme-opt-label">Oscuro</div>
+      </div>
+    </div>
+    <button class="modal-btn" id="nameModalBtn">Guardar y comenzar →</button>
+  </div>
+</div>
+
+<!-- ── TOPBAR ── -->
+<header class="topbar">
+  <div class="tb-logo">
+    <div class="tb-logo-mark">🚛</div>
+    <span class="tb-wordmark"><span>Smart</span>Dispatch</span>
+  </div>
+  <div class="tb-divider"></div>
+  <span class="tb-context">CeDis VHSA · Perecederos</span>
+  <div class="tb-spacer"></div>
+
+  <!-- Session Health Rail (signature element) -->
+  <div class="health-rail" id="healthRail">
+    <div class="health-pill">
+      <span>PDFs</span>
+      <span class="health-pill-val idle" id="hPDF">—</span>
+    </div>
+    <div class="health-sep"></div>
+    <div class="health-pill">
+      <span>Cobertura</span>
+      <span class="health-pill-val idle" id="hCov">—</span>
+    </div>
+    <div class="health-sep"></div>
+    <div class="health-pill">
+      <span>Calidad</span>
+      <span class="health-pill-val idle" id="hQual">—</span>
+    </div>
+    <div class="health-sep"></div>
+    <div class="health-pill">
+      <span>Estado</span>
+      <span class="health-pill-val idle" id="hStatus">En espera</span>
+    </div>
+  </div>
+
+  <div class="tb-user" id="tbUser">
+    <span class="tb-user-label">Captura</span>
+    <span class="tb-user-name" id="tbUserName">—</span>
+  </div>
+  <button class="tb-theme-btn" id="btnTheme" title="Cambiar tema">🌙</button>
+</header>
+
+<!-- ── APP ── -->
+<div class="app-shell">
+<div class="page">
+
+  <!-- Pipeline status -->
+  <div class="pipeline" id="pipeline">
+    <div class="pipe-step active" id="pipeStep1">
+      <div class="pipe-num" id="pipeNum1">1</div>
+      <div class="pipe-info">
+        <div class="pipe-title">PDFs de cargas</div>
+        <div class="pipe-desc">Archivos del día</div>
+      </div>
+      <span class="pipe-stat" id="pipeStat1">En espera</span>
+    </div>
+    <div class="pipe-arrow">›</div>
+    <div class="pipe-step" id="pipeStep2">
+      <div class="pipe-num" id="pipeNum2">2</div>
+      <div class="pipe-info">
+        <div class="pipe-title">Excel macro</div>
+        <div class="pipe-desc">RUTEO NUEVO + FACTURAS</div>
+      </div>
+      <span class="pipe-stat" id="pipeStat2">En espera</span>
+    </div>
+    <div class="pipe-arrow">›</div>
+    <div class="pipe-step optional" id="pipeStep3">
+      <div class="pipe-num" id="pipeNum3">·</div>
+      <div class="pipe-info">
+        <div class="pipe-title">Datos de despacho</div>
+        <div class="pipe-desc">Opcional · pega desde Excel</div>
+      </div>
+      <span class="pipe-stat" id="pipeStat3">Opcional</span>
+    </div>
+  </div>
+
+  <!-- Main two-column layout -->
+  <div class="main-grid">
+
+    <!-- LEFT: Input sidebar -->
+    <div class="sidebar">
+
+      <!-- Step 1: PDFs -->
+      <div class="card">
+        <div class="card-hdr">
+          <span class="card-hdr-icon">📄</span>
+          <div>
+            <div class="card-hdr-title">PDFs de cargas</div>
+            <div class="card-hdr-desc">Todos los archivos del día</div>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="dz" id="dropPDF">
+            <input type="file" id="filePDF" multiple accept=".pdf">
+            <span class="dz-ico">☁️</span>
+            <div class="dz-text"><strong>Arrastra los PDFs aquí</strong> o haz clic</div>
+            <div class="dz-sub">Todos los archivos del día a la vez</div>
+            <div class="dz-badge" id="pdfBadge">● 0 archivos</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2: Excel -->
+      <div class="card">
+        <div class="card-hdr">
+          <span class="card-hdr-icon">📊</span>
+          <div>
+            <div class="card-hdr-title">Excel macro</div>
+            <div class="card-hdr-desc">RUTEO NUEVO · CONCENTRADO FACTURAS</div>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="dz" id="dropXLS">
+            <input type="file" id="fileXLS" accept=".xlsx,.xls">
+            <span class="dz-ico">📊</span>
+            <div class="dz-text"><strong>Arrastra el Excel macro</strong> o haz clic</div>
+            <div class="dz-sub">Lee ambas pestañas automáticamente</div>
+            <div class="dz-badge" id="xlsBadge">● 0 rutas</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3: Despacho paste -->
+      <div class="card">
+        <div class="card-hdr">
+          <span class="card-hdr-icon">📋</span>
+          <div>
+            <div class="card-hdr-title">Datos de despacho</div>
+            <div class="card-hdr-desc">Opcional — pega desde Excel</div>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="paste-cols">
+            <span class="pcol pcol-key">RUTA</span>
+            <span class="pcol pcol-val">CASETA</span>
+            <span class="pcol pcol-val">WTMS</span>
+            <span class="pcol pcol-val">ID'S MASTER</span>
+          </div>
+          <textarea class="paste-ta" id="pasteArea"
+            placeholder="Ctrl+C en Excel → Ctrl+V aquí&#10;Columnas: RUTA · SALIDA CASETA · USUARIO WTMS · ID'S MASTER"></textarea>
+          <div class="paste-actions">
+            <button class="btn btn-primary btn-sm" id="btnParse">▶ Procesar</button>
+            <button class="btn btn-ghost btn-sm" id="btnPasteClear">✕ Limpiar</button>
+          </div>
+          <div class="paste-status" id="pasteSt"></div>
+          <div class="paste-preview" id="pastePreview">
+            <table><thead id="ppHead"></thead><tbody id="ppBody"></tbody></table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Catalog -->
+      <div class="cat-panel" id="catPanel">
+        <div class="cat-toggle" id="catToggle">
+          <span style="font-size:15px">🪪</span>
+          <div>
+            <div style="font-size:13px;font-weight:600;color:var(--text)">Catálogo de operadores</div>
+            <div style="font-size:11px;color:var(--text3)">Operador → Licencia · embebido</div>
+          </div>
+          <span class="cat-badge-count" id="catBadge">0 operadores</span>
+          <span class="cat-chev">▾</span>
+        </div>
+        <div class="cat-body">
+          <div class="cat-add-row">
+            <input class="cat-input" id="catOpInput" placeholder="Nombre operador (como aparece en PDF)" style="flex:2;min-width:160px">
+            <input class="cat-input" id="catLicInput" placeholder="Licencia" style="flex:1;min-width:90px">
+            <button class="btn btn-success btn-sm" id="btnCatAdd">+ Agregar</button>
+            <div class="cat-actions">
+              <div class="btn btn-ghost btn-sm cat-import-btn">
+                📥 Importar
+                <input type="file" id="catImportFile" accept=".xlsx,.xls">
+              </div>
+              <button class="btn btn-primary btn-sm" id="btnCatSave">💾 Guardar</button>
+            </div>
+          </div>
+          <div class="cat-table-wrap">
+            <table class="cat-table">
+              <thead><tr><th>Operador</th><th>Licencia</th><th></th></tr></thead>
+              <tbody id="catTbody"></tbody>
+            </table>
+          </div>
+          <div class="cat-status" id="catSt"></div>
+        </div>
+      </div>
+
+    </div><!-- /sidebar -->
+
+    <!-- RIGHT: Results panel -->
+    <div class="right-panel">
+
+      <!-- Stats strip -->
+      <div class="stats-strip" id="statsStrip">
+        <div class="stat-cell">
+          <div class="stat-ico">✅</div>
+          <div>
+            <div class="stat-lbl">Match PDF</div>
+            <div class="stat-num green" id="stMatch">—</div>
+            <div class="stat-sub idle" id="stMatchSub">—</div>
+          </div>
+        </div>
+        <div class="stat-cell">
+          <div class="stat-ico">⚠️</div>
+          <div>
+            <div class="stat-lbl">Sin match</div>
+            <div class="stat-num orange" id="stNoMatch">—</div>
+            <div class="stat-sub idle" id="stNoMatchSub">—</div>
+          </div>
+        </div>
+        <div class="stat-cell">
+          <div class="stat-ico">🪪</div>
+          <div>
+            <div class="stat-lbl">Con licencia</div>
+            <div class="stat-num blue" id="stLic">—</div>
+            <div class="stat-sub idle" id="stLicSub">—</div>
+          </div>
+        </div>
+        <div class="stat-cell">
+          <div class="stat-ico">📋</div>
+          <div>
+            <div class="stat-lbl">Con despacho</div>
+            <div class="stat-num purple" id="stDesp">—</div>
+            <div class="stat-sub idle" id="stDespSub">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action bar -->
+      <div class="action-bar">
+        <button class="btn btn-amber" id="btnExport" disabled>⬇ Descargar Excel</button>
+        <button class="btn btn-ghost" id="btnAddPDF" disabled>+ Más PDFs</button>
+        <div class="action-bar-sep"></div>
+        <button class="btn btn-danger-outline btn-sm" id="btnClear" disabled>✕ Reiniciar</button>
+        <div class="action-bar-sep"></div>
+        <span class="count-badge">PDFs <strong id="bdgPDF">—</strong></span>
+        <span class="count-badge">Rutas <strong id="bdgXLS">—</strong></span>
+        <span class="count-badge ok">Match <strong id="bdgMatch">—</strong></span>
+        <span class="count-badge warn">Sin match <strong id="bdgNoMatch">—</strong></span>
+        <span class="count-badge info">Despacho <strong id="bdgDesp">0</strong></span>
+      </div>
+
+      <!-- SVE Panel -->
+      <div class="card sve-panel" id="svePanel">
+        <div class="sve-header">
+          <div class="sve-shield-wrap" id="sveShield">🛡️</div>
+          <div class="sve-title-block">
+            <div class="sve-main-title">Validación inteligente</div>
+            <div class="sve-subtitle" id="sveSubtitle">Ejecutando auditoría…</div>
+          </div>
+          <div class="sve-ring-wrap">
+            <div class="sve-ring" id="sveRing">
+              <svg width="68" height="68" viewBox="0 0 68 68">
+                <circle class="ring-track" cx="34" cy="34" r="28"/>
+                <circle class="ring-fill" id="ringFill" cx="34" cy="34" r="28"
+                  stroke-dasharray="175.9" stroke-dashoffset="175.9"/>
+              </svg>
+              <div class="sve-ring-label">
+                <div class="ring-pct" id="ringPct">—</div>
+                <div class="ring-sub">CALIDAD</div>
+              </div>
+            </div>
+            <div class="sve-counters">
+              <div class="sve-count"><div class="sve-count-val crit" id="sveCrit">0</div><div class="sve-count-lbl">Críticas</div></div>
+              <div class="sve-count"><div class="sve-count-val warn" id="sveWarn">0</div><div class="sve-count-lbl">Advertencias</div></div>
+              <div class="sve-count"><div class="sve-count-val info" id="sveInfo">0</div><div class="sve-count-lbl">Informativas</div></div>
+              <div class="sve-count"><div class="sve-count-val pass" id="svePass">0</div><div class="sve-count-lbl">Aprobadas</div></div>
+            </div>
+          </div>
+        </div>
+        <div id="sveAlerts">
+          <div class="sve-empty-msg">Sin incidencias detectadas — los datos lucen bien.</div>
+        </div>
+        <div class="export-gate" id="exportGate">
+          <div class="gate-msg">
+            <strong>⚠ Exportación bloqueada</strong>
+            <span>Existen errores críticos. Corrígelos antes de continuar, o acepta la responsabilidad.</span>
+          </div>
+          <button class="btn btn-danger-outline btn-sm" id="btnForceExport">Exportar de todas formas →</button>
+        </div>
+      </div>
+
+      <!-- Preview table -->
+      <div class="card">
+        <div class="card-hdr">
+          <div>
+            <div class="card-hdr-title">Vista previa del despacho</div>
+            <div class="card-hdr-desc" id="previewDesc">Carga los PDFs y el Excel macro para comenzar</div>
+          </div>
+          <div class="card-hdr-right">
+            <button class="btn btn-amber btn-sm" id="btnExport2" disabled>⬇ Descargar</button>
+          </div>
+        </div>
+        <div class="prog-bar" id="progBar">
+          <div class="prog-bar-top">
+            <span class="prog-bar-label" id="progLabel">Procesando…</span>
+            <span class="prog-bar-pct"   id="progPct">0%</span>
+          </div>
+          <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
+        </div>
+        <div class="err-log" id="errLog"><div class="err-log-inner" id="errLogInner"></div></div>
+        <div class="legend-row" id="legendRow">
+          <span class="leg-label">Fuente</span>
+          <div class="leg"><div class="leg-dot" style="background:var(--amber)"></div>RUTA</div>
+          <div class="leg"><div class="leg-dot" style="background:var(--blue)"></div>Ruteo</div>
+          <div class="leg"><div class="leg-dot" style="background:var(--green)"></div>PDF</div>
+          <div class="leg"><div class="leg-dot" style="background:var(--purple)"></div>Despacho</div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr id="thead"></tr></thead>
+            <tbody id="tbody">
+              <tr><td colspan="20">
+                <div class="empty-state">
+                  <div class="empty-ico">📂</div>
+                  <div class="empty-title">Sin datos aún</div>
+                  <div class="empty-desc">Carga los PDFs y el Excel macro para comenzar el despacho</div>
+                </div>
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div><!-- /right-panel -->
+  </div><!-- /main-grid -->
+</div><!-- /page -->
+</div><!-- /app-shell -->
+
+<!-- ── WARN CONFIRM MODAL ── -->
+<div class="warn-modal-overlay hidden" id="warnModalOverlay">
+  <div class="warn-modal-box">
+    <div class="warn-modal-icon">⚠️</div>
+    <div class="warn-modal-title" id="wmTitle">Hay advertencias pendientes</div>
+    <div class="warn-modal-body"  id="wmBody"></div>
+    <div class="warn-modal-actions">
+      <button class="btn btn-ghost" id="wmReview">🔍 Revisar advertencias</button>
+      <button class="btn btn-amber" id="wmExport">⬇ Exportar de todos modos</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── ROUTE PICKER ── -->
+<div class="route-picker-overlay hidden" id="routePickerOverlay">
+  <div class="route-picker-box">
+    <div class="route-picker-title" id="rpTitle">Selecciona la ruta a corregir</div>
+    <div class="route-picker-sub"  id="rpSub">Este marchamo aparece en múltiples rutas. ¿Cuál deseas editar?</div>
+    <div class="route-picker-sep"></div>
+    <div class="route-picker-options" id="rpOptions"></div>
+    <button class="route-picker-cancel" id="rpCancel">Cancelar</button>
+  </div>
+</div>
+
+<!-- ── EDIT DRAWER ── -->
+<div class="edit-drawer" id="editDrawer">
+  <div class="edit-drawer-hdr">
+    <div>
+      <div class="edit-drawer-title">Editar registro</div>
+    </div>
+    <span class="edit-drawer-ruta" id="editDrawerRuta">—</span>
+    <div style="margin-left:auto;display:flex;gap:8px">
+      <span class="edit-change-badge" id="editChangeBadge" style="display:none">Sin cambios</span>
+      <button class="btn btn-success btn-sm" id="btnEditSave">✓ Guardar y revalidar</button>
+      <button class="btn btn-ghost btn-sm" id="btnEditCancel">Cancelar</button>
+    </div>
+  </div>
+  <div class="edit-drawer-body">
+    <div class="edit-fields-grid" id="editFieldsGrid"></div>
+  </div>
+</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+/* ═══════════════════════════════════════════════════════════════
+   SmartDispatch v2.0
+   Architecture: single IIFE, explicit module sections,
+   AppState as single source of truth, pure functions for logic,
+   UI functions only read from state (never write to it).
+═══════════════════════════════════════════════════════════════ */
+(function SmartDispatch() {
+'use strict';
+
+/* ─────────────────────────────────────────────────────────────
+   1. CONSTANTS
+───────────────────────────────────────────────────────────── */
+const MAX_MARCH = 5;
+
+const COL_RUTA    = 'RUTA';
+const COL_DETTE_E = 'DETTE';
+const COL_DETTE_F = 'DETTE.1';
+const COL_FACT    = 'FACTURAS';
+
+const SHEET_RUTEO    = ['RUTEO NUEVO','RUTEO','HOJA1','SHEET1'];
+const SHEET_FACTURAS = ['CONCENTRADO FACTURAS','FACTURAS','CONCENTRADO','FACT'];
+
+const BASE_ORDER = [
+  'FECHA','DIA','SW','LINEA','ENTREGA','ENT1','RUTA',
+  'ID IDA','COSTOS IDA','STATUS IDA','ID RETORNO','COSTO RETORNO','STATUS RETORNO',
+  'CARTA PORTE','CAPTURA','USUARIO WTMS','LIC.','OPERADOR','DET','FORMATO','NOMBRE','ESTADO',
+  'TARIMAS','MARCHAMO 1','MARCHAMO 2','MARCHAMO 3 ','MARCHAMO 4','MARCHAMO 5',
+  'CAJAS','CAP.','CORTINA','TRACTOR ','PLACA TRACTOR',
+  'REMOLQUE','PLACA REMOLQUE','GLS DE EMB.','FAC.','ESQUEMA',
+  'TEMP. ENRAMPE','TEMP. DESENRAMPE','SOLICITUD DE ENRAMPE','ENRAMPE','TIEMPO ENRAMPE',
+  'RETIRO','TIEMP APROX DE CARGA','RETIRO VS DESPACHO','HORA DE FACTURACION',
+  'HR. DESPACHO','SALIDA DE CASETA ','TIEMPO DE DESP','TIEMPO EN PATIO','CITA'
+];
+
+// Column source sets (for coloring)
+const COLS_PDF  = new Set(['OPERADOR','LIC.','TARIMAS',
+  'MARCHAMO 1','MARCHAMO 2','MARCHAMO 3 ','MARCHAMO 4','MARCHAMO 5','FAC.','CITA']);
+const COLS_FILL = new Set(['FECHA','DET','ENTREGA','ENT1','RUTA','CAJAS',
+  'CORTINA','TRACTOR ','REMOLQUE','TEMP. ENRAMPE','TEMP. DESENRAMPE',
+  'SOLICITUD DE ENRAMPE','ENRAMPE','RETIRO']);
+const COLS_DESP = new Set(['GLS DE EMB.','HORA DE FACTURACION',
+  'ID IDA','HR. DESPACHO','SALIDA DE CASETA ','USUARIO WTMS']);
+
+const PREVIEW_COLS = [
+  'FECHA','ENTREGA','ENT1','RUTA','DET','OPERADOR','LIC.',
+  'TARIMAS','MARCHAMO 1','FAC.',
+  'GLS DE EMB.','HORA DE FACTURACION',
+  'ID IDA','HR. DESPACHO','SALIDA DE CASETA ','USUARIO WTMS',
+  'CAJAS','CORTINA','TRACTOR ','ENRAMPE','RETIRO','CITA'
+];
+
+const INT_COLS      = new Set(['DET','RUTA','TARIMAS','CAJAS','CORTINA',
+  'MARCHAMO 1','MARCHAMO 2','MARCHAMO 3 ','MARCHAMO 4','MARCHAMO 5','FAC.','GLS DE EMB.','SW']);
+const DATE_COLS     = new Set(['FECHA']);
+const DATETIME_COLS = new Set(['HORA DE FACTURACION','HR. DESPACHO',
+  'SALIDA DE CASETA ','CITA','SOLICITUD DE ENRAMPE','ENRAMPE','RETIRO']);
+
+const DESP_ALIASES = {
+  ruta:   /^ruta$/i,
+  hrDesp: /hr.*desp|hora.*desp|despacho|hr\.?\s*desp/i,
+  caseta: /caseta|salida.*caseta|salida/i,
+  wtms:   /wtms|usuario/i,
+  idIda:  /id.*master|master|id.*ida|id'?s?\s*master/i
+};
+
+/* ─────────────────────────────────────────────────────────────
+   2. APPLICATION STATE — single source of truth
+───────────────────────────────────────────────────────────── */
+const State = {
+  // Data stores
+  pdfData:  new Map(),   // "ruta|factura" | "ruta|D|destino" → pdfRow
+  xlsData:  null,        // Array of rows from RUTEO NUEVO
+  factData: new Map(),   // invoice# → { gls, horaFact }
+  despData: new Map(),   // RUTA → { hrDesp, caseta, wtms, idIda }
+  merged:   [],          // Final merged rows (output of tryMerge)
+  catalog:  new Map(),   // normalizedName → licencia
+
+  // Session
+  user: localStorage.getItem('sd_user') || '',
+  theme: localStorage.getItem('sd_theme') || 'light',
+
+  // SVE
+  sveHasCritical: false,
+  sveHasWarnings: false,
+  sveLastQuality: 100,
+  sveAuditLog: [],
+
+  // Inline edits — patches applied to merged rows this session
+  // Each entry: { rowIndex, field, oldVal, newVal, ts }
+  edits: [],
+
+  // Fact cache — persistent multi-day concentrado storage
+  // Loaded from localStorage on init, written on each XLS load
+  factCache: new Map(), // invoice# → { gls, horaFact, date, source }
+
+  // Computed helpers
+  get matchCount()  { return this.merged.filter(r => r._matched).length; },
+  get licCount()    { return this.merged.filter(r => r._LIC).length; },
+  get despCount()   { return this.merged.filter(r => r._despMatched).length; },
+  get factCount()   { return this.merged.filter(r => r._factMatched).length; },
+};
+
+/* ─────────────────────────────────────────────────────────────
+   3. UTILITY FUNCTIONS
+───────────────────────────────────────────────────────────── */
+const escH = s =>
+  String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+const normOp = s => String(s).trim().toUpperCase().replace(/\s+/g,' ');
+
+function pct(v, t) { return t ? Math.round(v / t * 100) + '%' : '0%'; }
+
+function fmtDate(d) {
+  if (!(d instanceof Date) || isNaN(d)) return '';
+  const p = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   APPOINTMENT NORMALIZATION ENGINE  v1.0
+   Philosophy: normalize aggressively before validating.
+   "Attempt to correct automatically before rejecting."
+
+   Pipeline (each function has a single responsibility):
+     1. _normalizeWhitespace          — collapse runs of spaces, trim
+     2. _removeNoiseChars             — strip chars with no date/time value
+     3. _normalizeNumericGroups       — collapse spaced single-digit runs
+     4. _reconstructCompactDateTime   — interpret compact 12-digit or 8+4 formats
+     5. _normalizeSpaceSeparatedDate  — convert "DD MM YYYY [HH:MM]" to slashed form
+     6. _splitYearHour                — insert space between YYYYHH when separator is missing
+     7. _normalizeDateSeparators      — unify -, ., _, comma, | → /
+     8. _normalizeTimeSeparators      — unify ;, ., _, comma, | → :
+     9. _removeRepeatedSeparators     — collapse // :: -- ..
+    10. _normalizeTimePadding         — pad H:MM → HH:MM, HH:M → HH:MM
+    11. _validateNormalizedDate        — true if result matches DD/MM/YYYY HH:MM
+
+   All functions are pure; no external state dependencies.
+───────────────────────────────────────────────────────────── */
+
+// Step 1 — collapse all whitespace runs to single space, trim edges
+function _normalizeWhitespace(s) {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+// Step 2 — remove noise characters (no date/time information value)
+// Kept: digits 0-9, / - . _ , | : ; and space (evaluated as separators in later steps)
+function _removeNoiseChars(s) {
+  return s.replace(/[*#@~^'"()\[\]{}<>!?=%&$\\]/g, ' ');
+}
+
+// Step 3 — collapse space-separated single-digit runs within separator-bounded segments
+// "2 2 / 0 6" → "22 / 06" (operates token by token between explicit separators)
+// Does NOT collapse already-multi-digit groups (preserves "22 06 2026" for later steps)
+function _normalizeNumericGroups(s) {
+  // Split on explicit separator characters, process numeric tokens independently
+  return s.replace(/([0-9][0-9 ]*[0-9]|[0-9])/g, token => {
+    const parts = token.split(' ');
+    if (parts.every(p => p.length <= 1)) return parts.join('');
+    return token;
+  });
+}
+
+// Step 4 — reconstruct compact date-time formats
+// Handles: 220620261001, 22062026 1001, 22062026-1001, 2206202610:01
+function _reconstructCompactDateTime(s) {
+  if (s.includes('/')) return s; // already has slashes — not compact
+
+  // 12-digit run: DDMMYYYYHHMM
+  const c12 = s.replace(/\D/g, '');
+  if (c12.length === 12) {
+    const dd = c12.slice(0,2), mm = c12.slice(2,4),
+          yy = c12.slice(4,8), hh = c12.slice(8,10), mn = c12.slice(10,12);
+    if (+dd>=1&&+dd<=31 && +mm>=1&&+mm<=12 && +yy>=2000&&+yy<=2099 && +hh<=23 && +mn<=59)
+      return `${dd}/${mm}/${yy} ${hh}:${mn}`;
+  }
+
+  // 8+4 pattern: DDMMYYYY sep? HHMM
+  const m8 = s.replace(/\s/g,'').match(/^(\d{2})(\d{2})(\d{4})[-_. ]?(\d{2})[:.]?(\d{2})$/);
+  if (m8) {
+    const [, dd, mm, yy, hh, mn] = m8;
+    if (+dd>=1&&+dd<=31 && +mm>=1&&+mm<=12 && +yy>=2000&&+yy<=2099 && +hh<=23 && +mn<=59)
+      return `${dd}/${mm}/${yy} ${hh}:${mn}`;
+  }
+  return s;
+}
+
+// Step 5 — convert space-only separated dates "DD MM YYYY [HH:MM]" to slashed form
+// Only acts when no slash is present (avoids double-processing)
+function _normalizeSpaceSeparatedDate(s) {
+  if (s.includes('/')) return s;
+  return s.replace(/^(\d{1,2}) (\d{1,2}) (\d{4})(.*)$/, '$1/$2/$3$4');
+}
+
+// Step 6 — insert space between YYYYHH when year and hour are merged (e.g. /202610 → /2026 10)
+// This can happen after step 3 collapses single-digit segments adjacent to the year
+function _splitYearHour(s) {
+  return s.replace(/(\/\d{4})(\d{2})(?=[;:. ]|$)/g, '$1 $2');
+}
+
+// Step 7 — unify date separators to /
+// Accepts: - . _ , | and their spaced variants around the separator
+function _normalizeDateSeparators(s) {
+  return s.replace(/(\d)\s*[-._,|]\s*(\d)/g, '$1/$2')
+          .replace(/(\d)\s+(\d{1,2}[\/])/g,  '$1/$2')
+          .replace(/(\/\d{1,2})\s+(\d)/g,     '$1/$2');
+}
+
+// Step 8 — unify time separators to :
+// Accepts: ; . _ , | and doubled variants (::, ;;, ..)
+function _normalizeTimeSeparators(s) {
+  s = s.replace(/([;.,:_|])\1+/g, '$1');                  // collapse doubles: ;; → ;
+  s = s.replace(/(\d{1,2})[;._,|](\d{2})(?!\d)/g, '$1:$2'); // H?H[sep]MM → H?H:MM
+  s = s.replace(/(\d{1,2}) (\d{2})$/, '$1:$2');            // "10 01" at EOL → "10:01"
+  return s;
+}
+
+// Step 9 — remove repeated separators left by previous steps
+function _removeRepeatedSeparators(s) {
+  return s.replace(/\/{2,}/g, '/')
+          .replace(/-{2,}/g,  '-')
+          .replace(/:{2,}/g,  ':')
+          .replace(/\.{2,}/g, '.');
+}
+
+// Step 10 — pad single-digit hours and minutes
+// "8:05" → "08:05",  "10:1" → "10:01"
+function _normalizeTimePadding(s) {
+  s = s.replace(/(\d{1,2}):(\d)(?!\d)/g,    (_, h, m) => h.padStart(2,'0') + ':' + m.padStart(2,'0'));
+  s = s.replace(/(?<![\/\d])(\d):(\d{2})(?!\d)/g, (_, h, m) => h.padStart(2,'0') + ':' + m);
+  return s;
+}
+
+// Step 11 — validate: returns true only for "DD/MM/YYYY HH:MM"
+function _validateNormalizedDate(s) {
+  return /^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/.test(s.trim());
+}
+
+// ── MASTER PIPELINE ──
+// Returns normalized string. If the value cannot be recognized it is returned as-is
+// (better to pass garbage through than lose data silently).
+function normalizeAppointment(val) {
+  if (!val) return '';
+  let s = String(val);
+  s = _normalizeWhitespace(s);
+  s = _removeNoiseChars(s);
+  s = _normalizeWhitespace(s);          // re-clean after noise removal
+  s = _normalizeNumericGroups(s);       // collapse "2 2" → "22" between separators
+  s = _reconstructCompactDateTime(s);   // try compact 12-digit / 8+4 formats
+  s = _normalizeSpaceSeparatedDate(s);  // handle "DD MM YYYY" (space-only separation)
+  s = _splitYearHour(s);               // fix YYYYHHmm merge after grouping
+  s = _normalizeDateSeparators(s);      // unify - . _ , | → /
+  s = _normalizeTimeSeparators(s);      // unify ; . _ , | → :
+  s = _removeRepeatedSeparators(s);     // collapse // :: etc.
+  s = _normalizeWhitespace(s);          // final cleanup
+  s = _normalizeTimePadding(s);         // 8:05 → 08:05
+  return s.trim();
+}
+
+// normDateTime — used in paste panel (despacho data input)
+// Preserved behavior: bare time HH:MM gets today's date prepended
+function normDateTime(val) {
+  if (!val) return '';
+  const s = normalizeAppointment(String(val).trim());
+  if (/^\d{2}:\d{2}$/.test(s)) {
+    const now = new Date();
+    const y = now.getFullYear(),
+          m = String(now.getMonth()+1).padStart(2,'0'),
+          d = String(now.getDate()).padStart(2,'0');
+    return `${d}/${m}/${y} ${s}`;
+  }
+  return s;
+}
+
+// parseDateTime — converts normalized string to Date object
+// Primary format: DD/MM/YYYY HH:MM  |  Fallback: ISO YYYY-MM-DD  |  Native Date
+function parseDateTime(s) {
+  if (!s) return null;
+  const normalized = normalizeAppointment(String(s));
+  const m1 = normalized.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
+  if (m1) return new Date(+m1[3], +m1[2]-1, +m1[1], +m1[4], +m1[5], 30);
+  const m2 = String(s).match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})/);
+  if (m2) return new Date(+m2[1], +m2[2]-1, +m2[3], +m2[4], +m2[5], 30);
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function formatFactDate(val) {
+  if (!val && val !== 0) return '';
+  if (val instanceof Date) return isNaN(val.getTime()) ? String(val) : fmtDate(val);
+  if (typeof val === 'number') {
+    const d = new Date(Math.round((val - 25569) * 86400 * 1000));
+    return isNaN(d.getTime()) ? String(val) : fmtDate(d);
+  }
+  return String(val).trim();
+}
+
+// Column value resolver — replaces the brittle 30-branch if-chain with a map
+const COL_MAP = {
+  'FECHA':                r => r['FECHA']       ?? '',
+  'ENTREGA':              r => r['SETEO']        ?? '',
+  'ENT1':                 r => r['ENT1']         ?? '',
+  'RUTA':                 r => r['RUTA']         ?? '',
+  'DET':                  r => r['DETTE']        ?? '',
+  'CAJAS':                r => r['CAJAS']        ?? '',
+  'CORTINA':              r => r['CORTINA']      ?? '',
+  'TRACTOR ':             r => r['TRACTOR']      ?? '',
+  'REMOLQUE':             r => r['UNIDAD']       ?? '',
+  'GLS DE EMB.':          r => r['_GLS']         ?? '',
+  'TEMP. ENRAMPE':        r => r['T.E']          ?? '',
+  'TEMP. DESENRAMPE':     r => r['T.R']          ?? '',
+  'SOLICITUD DE ENRAMPE': r => r['SOLICITUD']    ?? '',
+  'ENRAMPE':              r => r['ENRAMPE']      ?? '',
+  'RETIRO':               r => r['RETIRO']       ?? '',
+  'SALIDA DE CASETA ':    r => r['_CASETA']      ?? '',
+  'CAPTURA':              _r => State.user,
+  'FAC.':                 r => r['FAC_PDF']      ?? '',
+  'LIC.':                 r => r['_LIC']         ?? '',
+  'OPERADOR':             r => r['OPERADOR']     ?? '',
+  'TARIMAS':              r => r['TARIMAS']      ?? '',
+  'MARCHAMO 1':           r => r['MARCHAMO 1']   ?? '',
+  'MARCHAMO 2':           r => r['MARCHAMO 2']   ?? '',
+  'MARCHAMO 3 ':          r => r['MARCHAMO 3']   ?? '',
+  'MARCHAMO 4':           r => r['MARCHAMO 4']   ?? '',
+  'MARCHAMO 5':           r => r['MARCHAMO 5']   ?? '',
+  'CITA':                 r => r['CITA']         ?? '',
+  'ID IDA':               r => r['_ID_IDA']      ?? '',
+  'HORA DE FACTURACION':  r => r['_HORA_FACT']   ?? '',
+  'HR. DESPACHO':         r => r['_HR_DESP'] || r['_HR_DESP_PDF'] || '',
+  'USUARIO WTMS':         r => r['_WTMS']        ?? '',
+};
+
+function getMapped(row, col) {
+  return (COL_MAP[col] ? COL_MAP[col](row) : row[col]) ?? '';
+}
+
+/* ─────────────────────────────────────────────────────────────
+   4. PDF PROCESSING
+───────────────────────────────────────────────────────────── */
+async function pdfExtract(file) {
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const lines = [], annots = [];
+
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page  = await pdf.getPage(p);
+    const vp    = page.getViewport({ scale: 1 });
+    const pageH = vp.height;
+    const tc    = await page.getTextContent();
+    const byY   = new Map();
+
+    for (const item of tc.items) {
+      if (!item.str.trim()) continue;
+      const y = Math.round(pageH - item.transform[5]);
+      if (!byY.has(y)) byY.set(y, []);
+      byY.get(y).push(item);
+    }
+
+    [...byY.keys()].sort((a, b) => a - b).forEach(y => {
+      const text = byY.get(y)
+        .sort((a, b) => a.transform[4] - b.transform[4])
+        .map(i => i.str.trim()).filter(Boolean).join(' ');
+      if (text) lines.push({ pageNum: p, y, text });
+    });
+
+    const rawAnnots = await page.getAnnotations();
+    for (const a of rawAnnots) {
+      if (a.subtype !== 'FreeText') continue;
+      let parts = [];
+      if (Array.isArray(a.textContent) && a.textContent.length) {
+        parts = a.textContent.map(s => String(s).trim()).filter(Boolean);
+      } else {
+        const plain = (a.contents || a.alternativeText || '').trim();
+        if (plain) parts = [plain];
+      }
+      const allText   = parts.join(' ');
+      const dateMatch = allText.match(/(\d{2}[\/\-]\d{2}[\/\-]\d{4})/);
+      const timeMatch = allText.match(/(\d{1,2})[:.;]\s*(\d{2})(?![\/\-\d])/);
+      if (!dateMatch) continue;
+      const fecha = dateMatch[1].replace(/-/g, '/');
+      let cita = fecha;
+      if (timeMatch) {
+        let h = parseInt(timeMatch[1], 10);
+        let m = parseInt(timeMatch[2], 10);
+        m += 1;
+        if (m >= 60) { m = 0; h += 1; }
+        if (h >= 24) h = 0;
+        cita = fecha + ' ' + String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+      }
+      annots.push({ pageNum: p, y_td: pageH - a.rect[3], cita: cita.trim() });
+    }
+  }
+  return { lines, annots };
+}
+
+function parsePDF({ lines, annots }, filename) {
+  const baseName     = filename.replace(/\.pdf$/i,'').replace(/^\d+_/,'');
+  const unifiedMatch = baseName.match(/^(\d+)-(\d+)$/);
+  const isUnified    = !!unifiedMatch;
+  const rutas        = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName];
+
+  let nombre = '', apellido = '', hrDespacho = '';
+  for (const { text } of lines) {
+    const nm = text.match(/^Nombre del Operador\s+(.+)$/i);   if (nm) nombre   = nm[1].trim();
+    const am = text.match(/^Apellido del Operador\s+(.+)$/i); if (am) apellido = am[1].trim();
+    if (!hrDespacho) {
+      const fm = text.match(/Impreso\s*\/\s*enviado\s+por\s+fax\s+(\d{2}[-\/]\d{2}[-\/]\d{2,4})\s+(\d{2}:\d{2})/i);
+      if (fm) {
+        let rawDate = fm[1].replace(/-/g, '/');
+        const pts = rawDate.split('/');
+        if (pts[2] && pts[2].length === 2) pts[2] = '20' + pts[2];
+        hrDespacho = pts.join('/') + ' ' + fm[2];
+      }
+    }
+  }
+  const operador = (nombre + ' ' + apellido).trim();
+
+  const ROW_RE  = /^CeDis\s+(?:TIENDA|HUB)\s+\S+\s+\d+\s+(4659\d{6})\s+(\d+)\s+\d+\s+\d+\s+\d+\s+[\d.]+\s+(\d{5,6})$/;
+  const CONT_RE = /^4659\s+(\w+)(?:\s+(\d{5,6}))?$/;
+  const MARC_RE = /^0?\d{5,6}$/;
+  const STOP_RE = /^(Total de ordenes|Fin del informe|Walmart)/i;
+  const DEST_RE = /^(?:TIENDA|HUB)\s+(\d+)\s+-\s+Zona horaria/i;
+
+  const destPositions = [];
+  for (const { pageNum, y, text } of lines) {
+    const dm = text.match(DEST_RE);
+    if (dm) destPositions.push({ destino: dm[1], pageNum, y });
+  }
+
+  const rawRows = [];
+  const textLines = lines.map(l => l.text);
+  let i = 0;
+  while (i < textLines.length) {
+    const rm = textLines[i].match(ROW_RE);
+    if (rm) {
+      const factura = rm[1], tarimas = rm[2], marchamos = [rm[3]];
+      let destino = ''; i++;
+      if (i < textLines.length) {
+        const cm = textLines[i].match(CONT_RE);
+        if (cm) { destino = cm[1]; if (cm[2]) marchamos.push(cm[2]); i++; }
+      }
+      while (i < textLines.length) {
+        const tl = textLines[i].trim();
+        if (STOP_RE.test(tl)) break;
+        if (tl.match(MARC_RE)) { marchamos.push(tl); i++; } else break;
+      }
+      rawRows.push({ factura, tarimas, marchamos, destino });
+    } else i++;
+  }
+
+  let result = [];
+  if (isUnified) {
+    const destinos   = [...new Set(rawRows.map(r => r.destino).filter(Boolean))];
+    const sameDestino = destinos.length <= 1;
+    if (sameDestino) {
+      const mid = Math.ceil(rawRows.length / 2);
+      const grupos = [rawRows.slice(0, mid), rawRows.slice(mid)];
+      rutas.forEach((ruta, idx) => {
+        const grupo = grupos[idx] || [];
+        if (!grupo.length) return;
+        const marchamos = [...new Set(grupo.flatMap(r => r.marchamos))];
+        const tarimas   = String(grupo.reduce((s, r) => s + (parseInt(r.tarimas, 10) || 0), 0));
+        result.push({ ruta, operador, destino: grupo[0].destino, factura: grupo[0].factura, tarimas, marchamos, cita: '', hrDespacho });
+      });
+    } else {
+      for (const r of rawRows) {
+        result.push({ ruta: baseName, operador, destino: r.destino, factura: r.factura, tarimas: r.tarimas, marchamos: r.marchamos, cita: '', hrDespacho });
+      }
+    }
+  } else {
+    for (const r of rawRows) {
+      result.push({ ruta: rutas[0], operador, destino: r.destino, factura: r.factura, tarimas: r.tarimas, marchamos: r.marchamos, cita: '', hrDespacho });
+    }
+  }
+
+  if (annots.length && destPositions.length) {
+    for (const ann of annots) {
+      let candidates = destPositions.filter(d => d.pageNum === ann.pageNum && d.y <= ann.y_td + 300);
+      if (!candidates.length) candidates = destPositions.filter(d => d.pageNum === ann.pageNum);
+      if (!candidates.length) candidates = destPositions.filter(d => d.pageNum === ann.pageNum - 1);
+      if (!candidates.length) candidates = destPositions;
+      if (!candidates.length) continue;
+      const best = candidates.reduce((a, b) => Math.abs(a.y - ann.y_td) < Math.abs(b.y - ann.y_td) ? a : b);
+      const citaRows = result.filter(r => r.destino === best.destino && !r.cita);
+      for (const row of citaRows) row.cita = ann.cita;
+    }
+  }
+  return result;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   5. EXCEL PROCESSING
+───────────────────────────────────────────────────────────── */
+async function processXLS(file) {
+  const buf  = await file.arrayBuffer();
+  const wb   = XLSX.read(buf, { type: 'array', cellDates: true });
+
+  const ruteoName = wb.SheetNames.find(n =>
+    SHEET_RUTEO.some(s => n.toUpperCase().includes(s.toUpperCase()))
+  ) || wb.SheetNames[0];
+  const wsRuteo = wb.Sheets[ruteoName];
+  const raw     = XLSX.utils.sheet_to_json(wsRuteo, { defval: '' });
+
+  const factName = wb.SheetNames.find(n =>
+    SHEET_FACTURAS.some(s => n.toUpperCase().includes(s.toUpperCase()))
+  );
+  const newFactData = new Map();
+  let factSheetLabel = '';
+
+  if (factName) {
+    const wsFact  = wb.Sheets[factName];
+    const rawFact = XLSX.utils.sheet_to_json(wsFact, { defval: '' });
+    const keys    = Object.keys(rawFact[0] || {});
+    const colInv  = keys.find(k => /INVOICE|FACTURA|FOLIO/i.test(k));
+    const colLoad = keys.find(k => /LOAD|GLS/i.test(k));
+    const colFin  = keys.find(k => /FINAL|HORA|FACTURACION|TS/i.test(k));
+    if (colInv) {
+      for (const r of rawFact) {
+        const inv = String(r[colInv] || '').trim();
+        if (!inv) continue;
+        newFactData.set(inv, {
+          gls:      colLoad ? String(r[colLoad] || '').trim() : '',
+          horaFact: colFin  ? formatFactDate(r[colFin])        : ''
+        });
+      }
+      factSheetLabel = `${newFactData.size} facturas (${factName})`;
+    } else {
+      factSheetLabel = 'hoja facturas sin columna INVOICE';
+    }
+  } else {
+    factSheetLabel = `sin hoja CONCENTRADO FACTURAS`;
+  }
+
+  return { rows: raw, factData: newFactData, ruteoName, factSheetLabel };
+}
+
+/* ─────────────────────────────────────────────────────────────
+   6. MERGE ENGINE
+───────────────────────────────────────────────────────────── */
+function runMerge() {
+  if (!State.xlsData || State.pdfData.size === 0) return;
+  State.merged = [];
+
+  for (const row of State.xlsData) {
+    const ruta   = String(row[COL_RUTA]    || '').trim();
+    const detteF = String(row[COL_DETTE_F] || '').trim();
+    const factXls= String(row[COL_FACT]    || '').trim();
+
+    let pdfRow = null, pdfMatchType = 'none';
+    if (factXls) { const r = State.pdfData.get(ruta + '|' + factXls); if (r) { pdfRow = r; pdfMatchType = 'specific'; } }
+    if (!pdfRow && detteF) { const r = State.pdfData.get(ruta + '|D|' + detteF); if (r) { pdfRow = r; pdfMatchType = 'specific'; } }
+    if (!pdfRow) {
+      const detteE = String(row[COL_DETTE_E] || '').trim();
+      if (detteE) { const r = State.pdfData.get(ruta + '|D|' + detteE); if (r) { pdfRow = r; pdfMatchType = 'specific'; } }
+    }
+    if (!pdfRow && ruta) {
+      for (const [, v] of State.pdfData) { if (v.ruta === ruta) { pdfRow = v; pdfMatchType = 'fallback'; break; } }
+    }
+
+    const factKey = pdfRow ? String(pdfRow.factura || '').trim() : '';
+    let   factRow = factKey ? (State.factData.get(factKey) || null) : null;
+    let   factFromCache = false;
+    if (!factRow && factKey) {
+      const cached = FactCache.lookup(factKey);
+      if (cached) { factRow = cached; factFromCache = true; }
+    }
+    const despRow = ruta ? (State.despData.get(ruta) || null) : null;
+
+    // _rowId: stable unique key — RUTA + delivery sub-key (DETTE.1).
+    // Multiple rows sharing the same RUTA but different destinations remain
+    // distinguishable. EditSystem uses this ID as the canonical pointer to
+    // guarantee it mutates exactly the right object in State.merged.
+    const _rowId = ruta + '||' + (detteF || String(State.merged.length));
+    const nr = { ...row, _rowId, _matched: !!pdfRow, _factMatched: !!factRow, _despMatched: !!despRow };
+
+    if (pdfRow) {
+      nr['OPERADOR'] = pdfRow.operador;
+      nr['TARIMAS']  = parseInt(pdfRow.tarimas, 10) || pdfRow.tarimas;
+      for (let m = 0; m < MAX_MARCH; m++) nr['MARCHAMO ' + (m+1)] = pdfRow.marchamos[m] || '';
+      nr['FAC_PDF']      = pdfRow.factura;
+      nr['DEST_PDF']     = pdfRow.destino;
+      nr['_CITA_PDF']    = (pdfMatchType === 'specific' && pdfRow.cita) ? pdfRow.cita : '';
+      nr['CITA']         = nr['_CITA_PDF'];
+      nr['_LIC']         = State.catalog.get(normOp(pdfRow.operador)) || '';
+      nr['_HR_DESP_PDF'] = pdfRow.hrDespacho || '';
+    } else {
+      nr['OPERADOR'] = '';
+      nr['TARIMAS']  = '';
+      for (let m = 0; m < MAX_MARCH; m++) nr['MARCHAMO ' + (m+1)] = '';
+      nr['_CITA_PDF'] = ''; nr['CITA'] = ''; nr['_LIC'] = ''; nr['_HR_DESP_PDF'] = '';
+    }
+
+    if (factRow) {
+      nr['_GLS']          = factRow.gls;
+      nr['_HORA_FACT']    = factRow.horaFact;
+      nr['_factSource']   = factFromCache ? 'cache' : 'current';
+      nr['_factCacheDate']= factFromCache ? (factRow.date || '') : '';
+    } else {
+      nr['_GLS'] = ''; nr['_HORA_FACT'] = ''; nr['_factSource'] = ''; nr['_factCacheDate'] = '';
+    }
+
+    if (despRow) { nr['_HR_DESP'] = despRow.hrDesp; nr['_CASETA'] = despRow.caseta; nr['_WTMS'] = despRow.wtms; nr['_ID_IDA'] = despRow.idIda; }
+    else         { nr['_HR_DESP'] = ''; nr['_CASETA'] = ''; nr['_WTMS'] = ''; nr['_ID_IDA'] = ''; }
+
+    State.merged.push(nr);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   7. EXPORT
+───────────────────────────────────────────────────────────── */
+function exportXLSX() {
+  const wb       = XLSX.utils.book_new();
+  const dataRows = State.merged.map(row => BASE_ORDER.map(col => {
+    let val = getMapped(row, col);
+    if (val === '' || val === null || val === undefined) return '';
+    if (DATE_COLS.has(col)) {
+      const d = val instanceof Date ? val : new Date(val);
+      return isNaN(d.getTime()) ? val : new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    }
+    if (DATETIME_COLS.has(col)) {
+      if (val instanceof Date && !isNaN(val.getTime())) return val;
+      const d = parseDateTime(String(val));
+      return d ? d : val;
+    }
+    if (INT_COLS.has(col)) {
+      const n = parseInt(String(val).replace(/[^\d]/g,''), 10);
+      return isNaN(n) ? val : n;
+    }
+    return val;
+  }));
+
+  const wsData = [BASE_ORDER, ...dataRows];
+  const ws     = XLSX.utils.aoa_to_sheet(wsData, { cellDates: true });
+  const range  = XLSX.utils.decode_range(ws['!ref']);
+
+  const HDR_COLORS = { PDF:'005F4B', DESP:'3B2278', FILL:'7A3B00', DEFAULT:'1A2A4A' };
+
+  for (let C = 0; C < BASE_ORDER.length; C++) {
+    const col = BASE_ORDER[C];
+    const ha  = XLSX.utils.encode_cell({ r: 0, c: C });
+    if (ws[ha]) {
+      const rgb = COLS_PDF.has(col) ? HDR_COLORS.PDF
+               : COLS_DESP.has(col) ? HDR_COLORS.DESP
+               : COLS_FILL.has(col) ? HDR_COLORS.FILL
+               : HDR_COLORS.DEFAULT;
+      ws[ha].s = {
+        font:      { bold: true, color: { rgb: 'FFFFFF' }, name: 'Calibri', sz: 9 },
+        fill:      { patternType: 'solid', fgColor: { rgb } },
+        alignment: { horizontal: 'center', vertical: 'center' }
+      };
+    }
+    for (let R = 1; R <= range.e.r; R++) {
+      const addr = XLSX.utils.encode_cell({ r: R, c: C });
+      if (!ws[addr]) continue;
+      if (DATE_COLS.has(col))     ws[addr].z = 'DD/MM/YYYY';
+      else if (DATETIME_COLS.has(col)) ws[addr].z = 'DD/MM/YYYY HH:MM';
+      else if (INT_COLS.has(col)) ws[addr].z = '0';
+      const even = R % 2 === 0;
+      let bgRgb = even ? 'EEF4FF' : 'FFFFFF', fontRgb = '1A1A2E';
+      const v = ws[addr].v;
+      if (COLS_PDF.has(col)  && v !== undefined && v !== '') { bgRgb = 'E6FFF8'; fontRgb = '005040'; }
+      else if (COLS_DESP.has(col) && v !== undefined && v !== '') { bgRgb = 'F0EBFF'; fontRgb = '3B1A8A'; }
+      else if (COLS_FILL.has(col) && v !== undefined && v !== '') { bgRgb = 'FFF3E0'; fontRgb = '7A3B00'; }
+      else if (col === 'RUTA') { bgRgb = even ? 'FFF8DC' : 'FFFFF0'; fontRgb = '7A3B00'; }
+      ws[addr].s = {
+        font:  { color: { rgb: fontRgb }, name: 'Calibri', sz: 9 },
+        fill:  { patternType: 'solid', fgColor: { rgb: bgRgb } },
+        alignment: { vertical: 'center' },
+        border: { bottom: { style: 'thin', color: { rgb: 'CCCCCC' } }, right: { style: 'thin', color: { rgb: 'CCCCCC' } } }
+      };
+    }
+  }
+
+  const W = {
+    'FECHA':13,'DIA':10,'SW':5,'LINEA':12,'ENTREGA':8,'ENT1':6,'RUTA':7,
+    'ID IDA':11,'COSTOS IDA':11,'STATUS IDA':13,'ID RETORNO':11,'COSTO RETORNO':13,
+    'STATUS RETORNO':14,'CARTA PORTE':11,'CAPTURA':9,'USUARIO WTMS':24,'LIC.':13,
+    'OPERADOR':30,'DET':7,'FORMATO':8,'NOMBRE':28,'ESTADO':7,'TARIMAS':8,
+    'MARCHAMO 1':11,'MARCHAMO 2':11,'MARCHAMO 3 ':11,'MARCHAMO 4':11,'MARCHAMO 5':11,
+    'CAJAS':7,'CAP.':7,'CORTINA':8,'TRACTOR ':9,'PLACA TRACTOR':13,'REMOLQUE':9,
+    'PLACA REMOLQUE':13,'GLS DE EMB.':11,'FAC.':13,'ESQUEMA':10,'TEMP. ENRAMPE':13,
+    'TEMP. DESENRAMPE':15,'SOLICITUD DE ENRAMPE':20,'ENRAMPE':18,'TIEMPO ENRAMPE':14,
+    'RETIRO':18,'TIEMP APROX DE CARGA':18,'RETIRO VS DESPACHO':18,'HORA DE FACTURACION':20,
+    'HR. DESPACHO':18,'SALIDA DE CASETA ':18,'TIEMPO DE DESP':14,'TIEMPO EN PATIO':14,'CITA':18
+  };
+  ws['!cols']  = BASE_ORDER.map(c => ({ wch: W[c] || 12 }));
+  ws['!freeze'] = { xSplit: 0, ySplit: 1, topLeftCell: 'A2', activePane: 'bottomLeft' };
+  ws['!rows']  = [{ hpt: 18 }, ...Array(range.e.r).fill({ hpt: 14 })];
+
+  XLSX.utils.book_append_sheet(wb, ws, 'RUTEO UNIFICADO');
+  const fecha = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `ruteo_base_${fecha}.xlsx`, { cellStyles: true });
+}
+
+/* ─────────────────────────────────────────────────────────────
+   8. CATALOG
+───────────────────────────────────────────────────────────── */
+const CATALOG_DATA = /*CATALOG_JSON_START*/[{"op":"ALBERTO MORALES HERNANDEZ","lic":"1CH2064633"},{"op":"PORFIRIO SOLIS HERNANDEZ","lic":"1CH2123351"},{"op":"CANDELARIO TORRES GARCIA","lic":"LFD01034092"},{"op":"MARIO PULIDO MAIN","lic":"BCN0104207"},{"op":"HERNANDEZ SILVAN ASUNCION","lic":"BCN0105640"},{"op":"JONATHAN LOPEZ CABRERA","lic":"BCN0217202"},{"op":"CARLOS ENRIQUE SOSA ESTRELLA","lic":"CAMP001196"},{"op":"PEDRO ALBERTO KU CONSTANTINO","lic":"CAMP001478"},{"op":"LUIS AURELIO ZAPATA AVILEZ","lic":"CAMP001569"},{"op":"EDUARDO CHIQUINI NOH","lic":"CAMP003138"},{"op":"JUAN ANDRES VILLEGAS ALONSO","lic":"CAMP003357"},{"op":"EDWIN ALAN LOPEZ VALDEZ","lic":"CAMP003450"},{"op":"JULIO ANTONIO SANCHEZ CHULIN","lic":"CAMP003649"},{"op":"MARCO ANTONIO DE LOS SANTOS DE LA ROSA","lic":"CAMP003735"},{"op":"MARIO ALBERTO CAN HERRERA","lic":"CAMP003911"},{"op":"JUAN CARLOS GOMEZ CETINA","lic":"CAMP004187"},{"op":"NEYSER PEREZ PEREZ","lic":"CAMP004196"},{"op":"JOEL ANTONIO ORDOÑEZ CANUL","lic":"CAMP004627"},{"op":"JOSUE ASAIR TORRES CHI","lic":"CAMP004712"},{"op":"ALVARO ISAI PUCH HAAS","lic":"CAMP005095"},{"op":"GUSTAVO PEDRAZA JIMENEZ","lic":"CAMP005096"},{"op":"ISRAEL BARABATO MALDONADO","lic":"CAMP00518"},{"op":"DAVID SOLIS CAN","lic":"CAMP005252"},{"op":"ANGEL MAURICIO BURGOS CANCHE","lic":"CAMP005253"},{"op":"ALDO SAEL MIS CAAMAL","lic":"CAMP005284"},{"op":"SANGEADO MORALES DARVEY","lic":"CAMP005300"},{"op":"GERARDO RAMOS HERNANDEZ","lic":"CAMP005318"},{"op":"AARON MONTEJO COLLI","lic":"CAMP005405"},{"op":"GENARO CRUZ SAN PEDRO","lic":"CAMP005413"},{"op":"JOSE JESUS MAY TOSCA","lic":"CAMP005563"},{"op":"PASTOR HERNANDEZ NIETO","lic":"CAMP00758"},{"op":"RICARDO CANDELERO ULLOA","lic":"CAMP00878"},{"op":"HEDDY ANTONIO PEREGRINO GURRIA","lic":"1CH2554663"},{"op":"LUIS ENRIQUE OVILLA MARTINEZ","lic":"CHIS006117"},{"op":"WILLIAM CRUZ TOLEDO","lic":"CHIS007141"},{"op":"JOSE DEL CARMEN VILLAREAL GARCIA","lic":"CHIS007454"},{"op":"MIGUEL ANGEL LICONA HERRERA","lic":"CHIS008034"},{"op":"EDEN LEON MURILLO","lic":"CHIS009588"},{"op":"HUMBERTO LOPEZ QUIROGA","lic":"CHIS011491"},{"op":"LISANDRO DE LA CRUZ MOLINA","lic":"CHIS011801"},{"op":"OCTAVIO ESPONDA ROQUE","lic":"CHIS012106"},{"op":"LUIS FRANCISCO HERNANDEZ VENTURA","lic":"CHIS012645"},{"op":"MANUEL DE JESUS VELAZQUEZ LOPEZ","lic":"CHIS013216"},{"op":"HUGO DANIEL GUTIERREZ RUIZ","lic":"CHIS013876"},{"op":"JOSE ABEL SANCHEZ LEON","lic":"CHIS014575"},{"op":"REY DAVID ZAVALA CABRERA","lic":"CHIS015345"},{"op":"APARICIO PAYRO RICARDO","lic":"CHIS015393"},{"op":"LUIS ALBERTO ACOSTA CONTRERAS","lic":"CHIS015472"},{"op":"FRANCISCO JAVIER MAGAÑA DIAZ","lic":"CHIS016152"},{"op":"JOSE GREGORIO GARCIA RAMOS","lic":"CHIS016169"},{"op":"GUSTAVO ALEJANDRO GONZALEZ RAMON","lic":"CHIS016207"},{"op":"VITAL ALCANTARA LUIS","lic":"DF00105002"},{"op":"ARIAS MARTINEZ VICTOR FRANCISCO","lic":"DF001102188"},{"op":"MARTINEZ RUIZ MIGUEL ANGEL","lic":"DF001103551"},{"op":"CAREAGA RIVERA ADAN","lic":"DF001110272"},{"op":"RICO MORENO RICARDO","lic":"DF001118383"},{"op":"ERICK OMAR RODRIGUEZ MADRIGAL","lic":"DF001124132"},{"op":"CARRERAS DIAZ JUAN ALBERTO","lic":"DF001134036"},{"op":"URIEL CRESPO MENDOZA","lic":"DF001149280"},{"op":"RICARDO MONTIEL PEREZ","lic":"DF001149730"},{"op":"NIETO ARREGUIN JORGE","lic":"DF001151626"},{"op":"SANTIAGO SANTIAGO ANTONIO","lic":"DF00144667"},{"op":"OCTAVIO DE JESUS HERNANDEZ GARCIA","lic":"DF00156770"},{"op":"MEJIA PEREZ JAIME","lic":"DF00164452"},{"op":"CORTES HERNANDEZ RUBICEL GREGORIO","lic":"DF00188226"},{"op":"RIVERA SALAZAR CARLOS GEOVANNI","lic":"DF00188763"},{"op":"TORRES ANTONIO IVAN","lic":"DF00193485"},{"op":"MORALES SORIANO JESUS","lic":"DF00197890"},{"op":"NUÑEZ LARES PABLO","lic":"DF00230891"},{"op":"JOSE LUIS CABRERA MARTINEZ","lic":"DF225873"},{"op":"VALADEZ HERNANDEZ ANDRES RAMON","lic":"EDOM023470"},{"op":"JUVENTINO DE LA O GARCIA","lic":"GRO0007152"},{"op":"CARLOS ENRIQUE PEREZ VARGAS","lic":"GTO0023255"},{"op":"LUIS ALFONSO GARCIA GARCIA","lic":"GTO023665"},{"op":"JESUS ARREDONDO HERNANDEZ","lic":"HGO0007006"},{"op":"EZEQUIEL GONZALEZ ALCANTARA","lic":"HGO0011033"},{"op":"GONZALEZ OROZCO RAUL DE JESUS","lic":"HGO0012354"},{"op":"DIAZ CASTRO JONATAN","lic":"HGO0022726"},{"op":"JOSE DEL CARMEN HERNANDEZ","lic":"JAL0063287"},{"op":"MORENO HERNANDEZ NAHUM","lic":"LDFD00100124"},{"op":"LUIS ALBERTO CUPIDO GONZALEZ","lic":"LFD000063700"},{"op":"IVAN JESUS PEREZ SANCHEZ","lic":"LFD00007862"},{"op":"LUIS RAMON VIDAL MONCADA","lic":"LFD00090007"},{"op":"RIGOBERTO GOMEZ SARMIENTO","lic":"LFD00011132"},{"op":"VIDAL JAVIER MONTEJO","lic":"LFD00013183"},{"op":"EVELIO PEREZ ALMEIDA","lic":"LFD00013563"},{"op":"MOISES GARCIA MADRIGAL","lic":"LFD00014722"},{"op":"MATEO GOMEZ LOPEZ","lic":"LFD00016275"},{"op":"ANGEL LEON MEGCHUN","lic":"LFD00019141"},{"op":"JOSEPT OSWALDO DIAZ SANCHEZ","lic":"LFD000224485"},{"op":"DAYRAN ALBERTO GARCIA RAMOS","lic":"LFD00022620"},{"op":"PEDRO ELIAS ALAVES ROSADO","lic":"LFD0023021"},{"op":"RAMIRO EZEQUIEL MORALES MAYORGA","lic":"LFD00024443"},{"op":"JUAN DANIEL CABALLERO COREA","lic":"LFD00025368"},{"op":"RICARDO CONCEPCION DIAZ","lic":"LFD00025441"},{"op":"MANUEL HERNANDEZ ALEJANDRO","lic":"LFD00025883"},{"op":"EDUARDO ALBERTO MALDONADO ESTRADA","lic":"LFD00025889"},{"op":"LUIS MIGUEL REYES HERNANDEZ","lic":"LFD00026130"},{"op":"JOSE NICOLAS JIMENEZ BURELO","lic":"LFD00029533"},{"op":"RAUL CERINO CONTRERAS","lic":"LFD00030396"},{"op":"JOEL ALMEIDA PEREZ","lic":"LFD00031225"},{"op":"JOSE ALONSO LOPEZ RAMIREZ","lic":"LFD00032355"},{"op":"NOE DEMETRIO PEREZ CRUZ","lic":"LFD00032362"},{"op":"SERGIO IVAN PEÑA SANCHEZ","lic":"LFD00033383"},{"op":"HEBERTO DEL CARMEN DE LA CRUZ","lic":"LFD00033602"},{"op":"ANGEL CORNELIO JIMENEZ","lic":"LFD00036165"},{"op":"GUSTAVO DEL CARMEN ORTIZ VAZQUEZ","lic":"LFD00041720"},{"op":"ELWIY DE LA CRUZ JUAREZ","lic":"LFD00041841"},{"op":"JOSE ALBERTO ROMERO MENDEZ","lic":"LFD0004284"},{"op":"CESAR ABRAHAM RIVERA HERNANDEZ","lic":"LFD00044178"},{"op":"MANUEL EFRAIN LOPEZ MENDEZ","lic":"LFD00045443"},{"op":"JUAN ANTONIO CARRETA HERNANDEZ","lic":"LFD00045850"},{"op":"HORACIO ALAMILLA PEREZ","lic":"LFD00046775"},{"op":"RAMON IGNACIO CRUZ CRUZ","lic":"LFD00047614"},{"op":"JOSE ALFREDO GONZALEZ COLLADO","lic":"LFD00049277"},{"op":"CONCEPCION PEREZ DIAZ","lic":"LFD00050209"},{"op":"CARLOS RODRIGUEZ MARTINEZ","lic":"LFD00051521"},{"op":"RAFAEL DEL CARMEN JIMENEZ MARTINEZ","lic":"LFD00052074"},{"op":"JOAQUIN CASTILLO JIMENEZ","lic":"LFD00054644"},{"op":"PEDRO NAVA ARELLANO","lic":"LFD00058436"},{"op":"JESUS EDUARDO PEREZ SANCHEZ","lic":"LFD00059266"},{"op":"ERENESTO ALFONSO ESPINOZA VAZQUEZ","lic":"LFD00062875"},{"op":"LANDEROS GOMEZ CARLOS CHRISTOPHER","lic":"LFD00063700"},{"op":"LUIS ALDO CASTAÑEDA RODRIGUEZ","lic":"LFD00063938"},{"op":"FERNANDO LOPEZ GARCIA","lic":"LFD00069505"},{"op":"JESUS HUMBERTO LOPEZ CUSTODIO","lic":"LFD00074587"},{"op":"SALVADOR RODRIGUEZ HIDALGO","lic":"LFD00074840"},{"op":"SAMUEL DE JESUS VILLACAÑA LEON","lic":"LFD00075717"},{"op":"YONI DEL CARMEN DE LA CRUZ RAMIREZ","lic":"LFD00076286"},{"op":"JULIO CESAR PURATA ALDAZ","lic":"LFD00078221"},{"op":"JESSIEL HUMBERTO NAVARRETE ACOSTA","lic":"LFD00080230"},{"op":"CALEB JAIR LOPEZ MARTINEZ","lic":"LFD00080696"},{"op":"IRVING CIPRIANO SORIANO CALVA","lic":"LFD00082926"},{"op":"AQUILES PEREZ CAPISTRAN","lic":"LFD00090075"},{"op":"RICARDO JACIEL BAEZA ALVAREZ","lic":"LFD00094973"},{"op":"ERIK DANIEL VILLEGAS HERNANDEZ","lic":"LFD00095192"},{"op":"DONOVAN ANTONIO MAYORAL BARRON","lic":"LFD00096439"},{"op":"VALENTIN RONEY CIMA MORENO","lic":"LFD000976329"},{"op":"LEONEL SALAS AVALOS","lic":"LFD000981352"},{"op":"ALBERTO CORDOVA RODRIGUEZ","lic":"LFD000983303"},{"op":"HUGO DANIEL SANCHEZ GOMEZ","lic":"LFD000998518"},{"op":"JOSE ARMANDO ROSAS LOPEZ","lic":"LFD00100518"},{"op":"LAZARO BOCANEGRA VARGAS","lic":"LFD00104788"},{"op":"FRANCISCO RODRIGO GOMEZ GOMEZ","lic":"LFD001065525"},{"op":"CARLOS RODRIGUEZ GARCILIANO","lic":"LFD001068201"},{"op":"ROGELIO ALFONSO ALVAREZ MENDEZ","lic":"LFD001084234"},{"op":"JESUS EDUARDO PEREZ LOPEZ","lic":"LFD0059266"},{"op":"ANGEL ANTONIO MIRANDA AGUILAR","lic":"LFD0068413"},{"op":"ARTURO LOPEZ MAY","lic":"LFD00979869"},{"op":"JOSE ENRIQUE HERNANDEZ RODRIGUEZ","lic":"LFD00981639"},{"op":"LEONEL PEREYRA BAUTISTA","lic":"LFD00982186"},{"op":"ANTONIO DE JESUS OROPEZA TORRES","lic":"LFD00982474"},{"op":"BENNY BISCAYA HERNANDEZ","lic":"LFD00983324"},{"op":"MARTIN ALEXIX PEREA PELUELA","lic":"LFD00985896"},{"op":"BRAULIO ARTURO JERONIMO HERNANDEZ","lic":"LFD00988330"},{"op":"TITO ALEJANDRO AVILES TORRES","lic":"LFD00989143"},{"op":"MARTIN ROJAS DE LA TRINIDAD","lic":"LFD00989873"},{"op":"YELMIN ARTURO PEREZ GARCIA","lic":"LFD00989915"},{"op":"HECTOR IVAN DIAZ CABRERA","lic":"LFD00990489"},{"op":"ALEJANDRO RODRIGUEZ PECHE","lic":"LFD00991906"},{"op":"ERIK ALBERTO VELA PAUL","lic":"LFD00993736"},{"op":"LUIS ALBERTO LOPEZ HERNANDEZ","lic":"LFD00994733"},{"op":"CARLOS GOMEZ SANTIZ","lic":"LFD00995246"},{"op":"SERGIO ANTONIO GARCIA","lic":"LFD00996100"},{"op":"LUIS FERNANDO MENDEZ BERNARD","lic":"LFD00999152"},{"op":"EDWUIN ASEL PEREZ IZQUIERDO","lic":"LFD01000185"},{"op":"CARLOS JAVIER RUEDA DIAZ","lic":"LFD01101654"},{"op":"BRIAN BALBOA DE LA CRUZ","lic":"LFD01002528"},{"op":"FERNANDO PEREZ PALOMEQUE","lic":"LFD01003428"},{"op":"CAMPOS HERNANDEZ LEONEL","lic":"LFD01003995"},{"op":"JORGE JAIR MEZA REYES","lic":"LFD01004542"},{"op":"JONAS DANIEL OLAN PATISTAN","lic":"LFD01005927"},{"op":"JONATHAN ALEJANDRO PATRON TEC","lic":"LFD01005993"},{"op":"JONHI DEL CARMEN TRIANO CORDOBA","lic":"LFD01007194"},{"op":"GABRIEL ARMANDO SALAZAR ZAVALA","lic":"LFD01008175"},{"op":"NATIVIDAD GERONIMO GARCIA","lic":"LFD01010945"},{"op":"FREDY GOSCO LEON","lic":"LFD01011703"},{"op":"JORGE COLORADO VELAZQUEZ","lic":"LFD01014980"},{"op":"HECTOR ARTURO HERNANDEZ CRUZ","lic":"LFD01023733"},{"op":"ANGEL RAMIREZ SANCHEZ","lic":"LFD01027640"},{"op":"ALEX EDUARDO DE DIOS HERNANDEZ","lic":"LFD01028742"},{"op":"ALEJANDRO BIBIANO LOPEZ","lic":"LFD01033192"},{"op":"MENDEZ FLORES JUAN CRISTOBAL","lic":"LFD01039559"},{"op":"ANGEL RODRIGO CAVICH AKE","lic":"LFD01041318"},{"op":"OMAR VILLAREAL LOPEZ","lic":"LFD01047224"},{"op":"CARLOS ARTURO PALACIOS MONTEJO","lic":"LFD01047856"},{"op":"EDUARDO TORRES ROMERO","lic":"LFD0105119"},{"op":"JOSE MANUEL MAY REYES","lic":"LFD01051168"},{"op":"LUIS DIAZ CURIEL","lic":"LFD01052745"},{"op":"GERARDO GUTIERREZ LANDERO","lic":"LFD01053666"},{"op":"VILLALBA CASTILLO JOSE ANGEL","lic":"LFD01057575"},{"op":"CARLOS MANANUEL PRESENDA HERNANDEZ","lic":"LFD01058488"},{"op":"DANIEL ANDRES ALVAREZ GUTIERREZ","lic":"LFD01059246"},{"op":"FRANCISO RODRIGO GOMEZ","lic":"LFD01065525"},{"op":"ELISEO RAMIREZ CASANOVA","lic":"LFD01066675"},{"op":"KEVIN ALEJO SUAREZ","lic":"LFD01067576"},{"op":"RICARDO BOA ROCHA","lic":"LFD01069517"},{"op":"ELEAZAR CERRILLO CERON","lic":"LFD01070394"},{"op":"RODOLFO CARRILLO BALCAZAR","lic":"LFD01072027"},{"op":"JORGE GABRIEL CANO RAMON","lic":"LFD01073064"},{"op":"NESTOR MANUEL ALVAREZ CHABLE","lic":"LFD01075280"},{"op":"KEY RODRIGO ROMERO ACOSTA","lic":"LFD01077844"},{"op":"RICARDO CANDELARIO ULLOA","lic":"LFD01080525"},{"op":"JESUS FABIAN VAZQUEZ DE LA CRUZ","lic":"LFD01080658"},{"op":"HENRRY JAIR MARTINEZ ALVAREZ","lic":"LFD01081638"},{"op":"LUIS FERNANDO HERNANDEZ SANTIAGO","lic":"LFD01081840"},{"op":"TITO OLAN CONTRERAS","lic":"LFD01086525"},{"op":"CARLOS MARIO IZQUIERDO TORRES","lic":"LFD01086806"},{"op":"JOSE MIGUEL HERNANDEZ HERNANDEZ","lic":"LFD01088329"},{"op":"SALVADOR PORTILLA","lic":"LFD01089443"},{"op":"GABRIEL CORDOVA VERA","lic":"LFD01092049"},{"op":"MARVIN JIMENEZ MENDEZ","lic":"LFD01093591"},{"op":"FERMIN DE LA CRUZ GARCIA","lic":"LFD01095007"},{"op":"ELIAS DAMIAN FERIA LOPEZ","lic":"LFD01099022"},{"op":"JUAN CARLOS RIVERA SANCHEZ","lic":"LFD01104442"},{"op":"ANTONIO SHADIDI CISNERO HUCHIN","lic":"LFD01105383"},{"op":"WILLIANS ZUMARRAGA OVANDO","lic":"LFD01106459"},{"op":"SERGIO RENAN HERNANDEZ PADRON","lic":"LFD01107571"},{"op":"GUSTAVO GARCIA RIVERA","lic":"LFD01108049"},{"op":"JOSE EDUARDO HERNANDEZ SILVAN","lic":"LFD01111095"},{"op":"ANGEL ANTONIO PERDOMO PUCH","lic":"LFD01114996"},{"op":"ABEL CAPORAL MONTIEL","lic":"LFD01116270"},{"op":"PEDRO ANTONIO CUSTODIO MORALES","lic":"LFD01116655"},{"op":"ALBERTO GARCIA RAMOS","lic":"LFD01117978"},{"op":"FERNANDO RAMON DE LOS SANTOS","lic":"LFD01118098"},{"op":"DAVID SOLIS CANO","lic":"LFD0111944"},{"op":"HEBERTO ALEJO HERNANDEZ","lic":"LFD01119539"},{"op":"JORGE CASIMIRO MENDOZA LUCIANO","lic":"LFD11211116"},{"op":"PABLO VELAZQUEZ SANCHEZ","lic":"LFD01122495"},{"op":"ERID ANTONIO VAZQUEZ LOPEZ","lic":"LFD01125857"},{"op":"OSWALDO IVAN MORALES AQUINO","lic":"LFD01126230"},{"op":"JOSE ARMANDO LUNA ALEJANDRO","lic":"LFD01126760"},{"op":"JOSE HUMBERTO ESTRADA VALENCIA","lic":"LFD01130135"},{"op":"PABLO MORALES RODRIGUEZ","lic":"LFD01135120"},{"op":"VICENTE JIMENEZ OLIVA","lic":"LFD01135393"},{"op":"FRANCISCO JAVIER FAJARDO CRUZ","lic":"LFD01136677"},{"op":"IRVING YAIR DOMINGUEZ PRIETO","lic":"LFD01138113"},{"op":"ERICK MANUEL ALVARADO SANTIAGO","lic":"LFD01142119"},{"op":"TITO LIVIO CALIX MORALES","lic":"LFD01143348"},{"op":"SALVADOR HERNANDEZ JIMENEZ","lic":"LFD01147128"},{"op":"LUIS FERNANDO ROMAN ALEJO","lic":"LFD01147395"},{"op":"FELIPE AGUILAR MARTINEZ","lic":"LFD0115026"},{"op":"KEVIN DIAZ GOMEZ","lic":"LFD01162191"},{"op":"GUADALUPE DEL JESUS NOH VILLARINO","lic":"LFD1167152"},{"op":"JOSE BOANERGE HERNANDEZ SANCHEZ","lic":"LFD01167364"},{"op":"JOSE BOANERGFE HERNANDEZ SANCHEZ","lic":"LFD01168364"},{"op":"JORGE HUMBERTO VALDEZ GOMEZ","lic":"LFD01170906"},{"op":"JOSE DE JESUS OCAÑA SUAREZ","lic":"LFD01177228"},{"op":"DANIEL GONZALEZ HERNANDEZ","lic":"LFD011799831"},{"op":"ANTONIO CORDOVA CORDOVA","lic":"LFD01182264"},{"op":"DANIEL DE LA CRUZ MARIN","lic":"LFD01183160"},{"op":"ELISEO ALEJO PEREZ","lic":"LFD01185742"},{"op":"RICARDO DE JESUS CHAN CAAMAL","lic":"LFD1158015"},{"op":"JONATHAN MENDEZ MARTINEZ","lic":"LFD01191864"},{"op":"FERNANDO GOMEZ GUZMAN","lic":"LFD01193607"},{"op":"EMMANUEL SALOMON RIVERA","lic":"LFD01190281"},{"op":"MIGUEL ANGEL LOPEZ CASTAÑEDA","lic":"MICH106352"},{"op":"BADAL MARTINEZ LEONEL","lic":"MICH109194"},{"op":"LUIS ALBERTO MORALES CRUZ","lic":"MICH114975"},{"op":"ORTEGA NOLASCO HIPOLITO","lic":"MOR0000479"},{"op":"PARDO BASTIDA GENARO","lic":"MOR06752"},{"op":"JOSE ROBERTO MUÑIZ BECERRA","lic":"OAX0203027"},{"op":"BULMARO DOMINGUEZ ORTIZ","lic":"PUE0001417"},{"op":"ARMANDO ESPINOZA GARCIA","lic":"PUE0009344"},{"op":"GUILLERMO RAUL VAZQUEZ CARMONA","lic":"PUE0014676"},{"op":"JOSE LUIS FUNES CRUZ","lic":"PUE0031064"},{"op":"EDWARD VENTURA MONTERO","lic":"QR00035682"},{"op":"CIRILO BRAVO MORALES","lic":"QRO0002307"},{"op":"EMIR MARQUEZ MAGAÑA","lic":"QRO00040260"},{"op":"DARWIN LOPEZ CONTRERAS","lic":"QRO0035682"},{"op":"GUILLERMO ANTONIO ESTRELLA CABALLERO","lic":"QROO022780"},{"op":"ANGEL GAMAS RAMOS","lic":"QROO034889"},{"op":"GAMAS RAMOS PABLO","lic":"QROO034959"},{"op":"ROSALINO GREENE SANCHEZ","lic":"QROO038458"},{"op":"MENDEZ PEREZ ABISAI","lic":"QROO44746"},{"op":"MORENO IGNACIO CLAUDIO GERARDO","lic":"SPL0017826"},{"op":"AMBROSIO HERNANDEZ ACOSTA","lic":"TAB0000186"},{"op":"RODRIGUEZ GARCIA ERASTO EVARISTO","lic":"TAB0000245"},{"op":"HILARIO RUIZ VILLANUEVA","lic":"TAB000040"},{"op":"ADRIAN OROPEZA TORRES","lic":"TAB0005573"},{"op":"MANUEL ANTONIO AGUILAR CABRALES","lic":"TAB0000663"},{"op":"JOSE ALBERTO PEREZ CRUZ","lic":"TAB0010643"},{"op":"JOSE MANUEL CASTELLANOS","lic":"TAB0001102"},{"op":"ADONAI OVANDO DE DIOS","lic":"TAB000132"},{"op":"ANDERSON ALVARO OLAN DE LA CRUZ","lic":"TAB0015904"},{"op":"RAFAEL LOPEZ FLORES","lic":"TAB00016455"},{"op":"JOSE JUAN GARCIA RAMOS","lic":"TAB0001804"},{"op":"PEDRO HERNANDEZ SILVA","lic":"TAB0001988"},{"op":"BERNARDO BURELO LOPEZ","lic":"TAB0001773"},{"op":"GUSTAVO DIAZ LOPEZ","lic":"TAB0002929"},{"op":"OSCAR JIMENEZ MADRIGAL","lic":"TAB0004285"},{"op":"ANDRES DENIS ALCUDIA","lic":"TAB0004634"},{"op":"EDUARDO JIMENEZ JUAREZ","lic":"TAB0004727"},{"op":"ANATALIO HERNANDEZ ALVAREZ","lic":"TAB004807"},{"op":"MAGAÑA ALEGRIA JOSE ANGEL","lic":"TAB0004870"},{"op":"LOPEZ HERNANDEZ SANTIAGO","lic":"TAB0004879"},{"op":"MORALES ALEJO FREDDY","lic":"TAB0004914"},{"op":"PEREZ CANO JOSUE","lic":"TAB0005039"},{"op":"JOSE RONEY MARTINEZ DOMINGUEZ","lic":"TAB0005142"},{"op":"CESAR ARMANDO MENDEZ ACUÑA","lic":"TAB0005190"},{"op":"CARMEN JIMENEZ PEREZ","lic":"TAB0005391"},{"op":"JSOE WILBERT HERNANDEZ MURILLO","lic":"TAB0005503"},{"op":"JOSE DE LOS SANTOS RODRIGUEZ HERNANDEZ","lic":"TAB0005904"},{"op":"ELVIS RICARDO VILLACAÑA LEON","lic":"TAB0006077"},{"op":"HERMENEGILDO VELAZQUEZ RAMOS","lic":"TAB0006222"},{"op":"ELIUD HERNANDEZ CHABLE","lic":"LFD01109217"},{"op":"MARTINEZ POLANCO FELIPE DE JESUS","lic":"TAB0006482"},{"op":"ALVAREZ VILLARREAL GABRIEL","lic":"TAB0006873"},{"op":"DANIEL ARTURO DE LA CRUZ RAMIREZ","lic":"TAB0006938"},{"op":"ARTURO ALIPI RODRIGUEZ","lic":"TAB0007166"},{"op":"OVIDIO GARCIA ROJAS","lic":"TAB0007906"},{"op":"LUIS ALBERTO CASTELLANO SULIAN","lic":"TAB0007913"},{"op":"PINEDA HERNANDEZ GUADALUPE","lic":"TAB0008012"},{"op":"OBETH SANCHEZ JIMENEZ","lic":"TAB0008016"},{"op":"LAGUNA CASTILLEJOS SAMUEL","lic":"TAB0008017"},{"op":"OMAR ROSALES ORAMAS","lic":"TAB0008387"},{"op":"GABRIEL RODRIGUEZ PRIEGO","lic":"TAB0008437"},{"op":"CARLOS ARTURO MOHENO MARIN","lic":"TAB000851"},{"op":"CESAR RAMIREZ MORALES","lic":"TAB0008620"},{"op":"GOMEZ ALVARADO ERAY DE JESUS","lic":"TAB0008691"},{"op":"SAUL ALCUDIA MARQUEZ SAUL","lic":"TAB0008820"},{"op":"CANDELARIO ARIAS LOPEZ","lic":"TAB0008834"},{"op":"GENARO PERALTA GALLEGOS","lic":"TAB0008882"},{"op":"VICTOR MANUEL MARTINEZ","lic":"TAB0008962"},{"op":"EUSTORGIO DEL CARMEN JIMENEZ BOLAINA","lic":"TAB0009002"},{"op":"JUAN ALBERTO PEREZ ROMERO","lic":"TAB0009282"},{"op":"ROBERTO GARCIA ORELLANO","lic":"TAB0009357"},{"op":"JOSE DEL CARMEN LOPEZ VAZQUEZ","lic":"TAB0009408"},{"op":"HERNANDEZ CRUZ MIGUEL ANGEL","lic":"TAB0009647"},{"op":"SAUL MARTINEZ RAMIREZ","lic":"TAB0009701"},{"op":"JUAN ALBERTO MAY ANTONIO","lic":"TAB0009729"},{"op":"REYES ANDRES VILLARREAL GOMEZ","lic":"TAB0009780"},{"op":"CARLOS ANTONIO DE LA CRUZ VALIER","lic":"TAB0009804"},{"op":"ADAN FELIX ANTONIO","lic":"TAB0009879"},{"op":"JUAN CARLOS HERNANDEZ LOPEZ","lic":"TAB0009962"},{"op":"OVIDIO MENA RUEDA","lic":"TAB0010050"},{"op":"REYES ASCENCIO JOSE DEL CARMEN","lic":"TAB0010143"},{"op":"YODIEL COLORADO CASTILLO","lic":"TAB0010169"},{"op":"FRANCISCO MAGAÑA RAMOS","lic":"TAB0010434"},{"op":"ORLANDO MENENDEZ CORREA","lic":"TAB0010568"},{"op":"JESUS GUADALUPE DOMINGUEZ LEON","lic":"TAB0010641"},{"op":"DAVID DE LA ROSA SOBERANO","lic":"TAB0010785"},{"op":"ASUNCION HERNANDEZ GARCIA","lic":"TAB0010800"},{"op":"JESUS MANUEL AGUIRRE TORRES","lic":"TAB0010810"},{"op":"JOSE DEL CARMEN PEREZ BURELO","lic":"TAB0010889"},{"op":"JOSE DEL CARMEN PEREZ PEREZ","lic":"TAB0011014"},{"op":"DOMINGUEZ CAPETILLO MANUEL ALBERTO","lic":"TAB0011041"},{"op":"ANDRES ARTURO BAUTISTA MAGAÑA","lic":"TAB0011467"},{"op":"JUAN GABRIEL LOPEZ PEREZ","lic":"TAB0011630"},{"op":"JOSE MANUEL AGUILAR","lic":"TAB0011674"},{"op":"FELIX TORRUCO HERNANDEZ","lic":"TAB0011956"},{"op":"JORGE LUIS ALEJO LARA","lic":"TAB0012001"},{"op":"ALEJANDRO MONTEJO ZAMUDIO","lic":"TAB00012026"},{"op":"JONATHAN DAVID CRUZ OLAN","lic":"TAB0012201"},{"op":"ROMAN PASCUAL LEON","lic":"TAB0012225"},{"op":"CANDELARIO DE DIOS DE LA CRUZ","lic":"TAB0012527"},{"op":"CARLOS AURELIO SALVADOR KU","lic":"TAB00125585"},{"op":"CARLOS ALBERTO MENDOZA CHABLE","lic":"TAB0012600"},{"op":"ANGEL FIDEL GOMEZ MARTINEZ","lic":"TAB0012632"},{"op":"CALEB ALMEIDA ZAPATA","lic":"TAB0012789"},{"op":"MOISES OCHOA HERNANDEZ","lic":"TAB0013811"},{"op":"CANDELARIO APATISTAN JIMENEZ","lic":"TAB0013005"},{"op":"CRISTIAN EDWIN ZAPATA DE DIOS","lic":"TAB0013033"},{"op":"ROSALINO GARCIA MONTEJO","lic":"TAB0013193"},{"op":"LIMBERG CANDELERO JOSE","lic":"TAB0013306"},{"op":"JOSE GUADALUPE BEAURREGARD ARIAS","lic":"TAB0013510"},{"op":"CARLOS ALFREDO TORRES SILVAN","lic":"TAB0013553"},{"op":"DARWIN RAMOS HERNANDEZ","lic":"TAB0013565"},{"op":"ZAPATA AGUILAR EMILIANO","lic":"TAB0013589"},{"op":"DIEGO ARMANDO GALLEGO SILVAN","lic":"TAB0013646"},{"op":"EMANUEL RODRIGUEZ GONZALEZ","lic":"TAB013663"},{"op":"CESAR SANCHEZ SUAREZ","lic":"TAB0013965"},{"op":"FLORENTINO SILVA LUNA","lic":"TAB0014084"},{"op":"CARLOS ENRIQUE MAY RODRIGUEZ","lic":"TAB0014152"},{"op":"VICTOR MANUEL OSORIO SANCHEZ","lic":"TAB0014231"},{"op":"MARIO SANDOVAL MOLINA","lic":"TAB0014288"},{"op":"ANGEL FRANCISCO FLORES RAMOS","lic":"TAB0014326"},{"op":"LEONARDO GARCIA ALAMILLA","lic":"TABV0014382"},{"op":"JUAN MANUEL DE LA CRUZ GOMEZ","lic":"TAB0014407"},{"op":"CRUZ DANIEL LOPEZ LOPEZ","lic":"TAB0014434"},{"op":"BARTOLO ALMEIDA COLLADO","lic":"TAB0014530"},{"op":"JESUS GARDUÑO DE LA CRUZ","lic":"TAB0014584"},{"op":"DAVID ALFONSO RUIZ CARDEÑO","lic":"TAB0014841"},{"op":"GARCIA GARCIA JORGE LUIS","lic":"TAB0014849"},{"op":"PERYRA LANDERO AGUSTÍN","lic":"TAB0014872"},{"op":"ANDRES LOPEZ DOMINGUEZ","lic":"TAB0014924"},{"op":"LUIS ENRIQUE LEON DIAZ","lic":"TAB0014935"},{"op":"GUSTAVO SANTIAGO RAMIREZ LOPEZ","lic":"TAB0015100"},{"op":"MIGUEL ANGEL LOPEZ ALVAREZ","lic":"TAB0015110"},{"op":"MANUEL ANTONIO MARTINEZ RINCON","lic":"TAB0015149"},{"op":"LUIS ALBERTO RODRIGUEZ LOPEZ","lic":"TAB0015194"},{"op":"JUAN MANUEL TORRES VIDAL","lic":"TAB0015253"},{"op":"CARLOS DAMIAN ESCOBAR LOPEZ","lic":"TAB0015204"},{"op":"DAVID ANTONIO SOTENO LOPEZ","lic":"TAB0015348"},{"op":"ALFREDO JOSE DOMINGUEZ VELASQUEZ","lic":"TAB0015471"},{"op":"MIGUEL ANGEL DAMIAN MARTINEZ","lic":"TAB0015492"},{"op":"LUCAS ANTONIO MELENDEZ QUEVEDO","lic":"TAB0015503"},{"op":"DE LA ROSA SOBERANO AGUSTIN","lic":"TAB0015514"},{"op":"ALEJANDRO VILLARREAL LOPEZ","lic":"TAB0015555"},{"op":"FELIPE MAGAÑA LOPEZ","lic":"TAB0015593"},{"op":"PEREZ TORRES JOSUE GUSTAVO","lic":"TAB0015632"},{"op":"PRIEGO LARA JUAN","lic":"TAB0015633"},{"op":"DAVID SANCHEZ HERNANDEZ","lic":"TAB0015877"},{"op":"MELVIN DARIO MORALES MORALES","lic":"TAB0015960"},{"op":"EZEQUIEL CRUZ MAGAÑA","lic":"TAB0016046"},{"op":"OSCAR ENRIQUE JIMENEZ HERNANDEZ","lic":"TAB0016072"},{"op":"JONAS HERRERA VENTURA","lic":"TAB0016156"},{"op":"MIGUEL ANGEL RODRIGUEZ RAMOS","lic":"TAB0016204"},{"op":"VICTOR RIVERA ALMEIDA","lic":"TAB0016233"},{"op":"LEO MARTIN QUIROGA LOPEZ","lic":"TAB0016303"},{"op":"TONY CARRILLO MACIEL","lic":"TAB0016490"},{"op":"EDGAR HERNANDEZ CORNELIO","lic":"TAB00016496"},{"op":"DANIEL MORALES SANCHEZ","lic":"TAB0016514"},{"op":"DAVID APARICIO SOLIS","lic":"TAB0016564"},{"op":"OCTAVIO JAVIER DE LA CRUZ MAGAÑA","lic":"TAB0019011"},{"op":"EMMANUEL BAUTISTA NARANJO","lic":"TAB003578"},{"op":"MARCOS ANTONIO PEREZ PEREZ","lic":"TAB006618"},{"op":"DARIO GARCIA RAMOS","lic":"TAB03794"},{"op":"JOSE RAMIREZ ZAVALA","lic":"TAB04417"},{"op":"MANUEL ALBERTO DOMINGUEZ CAPETILLO","lic":"TAB0611041"},{"op":"JOSE ALBERTO ZAPATA LEON","lic":"TAB1030056"},{"op":"JORGE LUIS VILLAREAL GOMEZ","lic":"TAB160093"},{"op":"MARTINEZ ORDAZ DANIEL","lic":"TLAX006066"},{"op":"ROCHA FERNANDEZ ROSALIO","lic":"TLAX02392"},{"op":"LOREDO GUZMAN CARLOS ALBERTO","lic":"TLAX043714"},{"op":"ALFREDO SOSA PEÑA","lic":"VER0138684"},{"op":"ALEJANDRO HERNANDEZ DURAN","lic":"VER0152771"},{"op":"MIGUEL ANGEL SANCHEZ","lic":"VER0153314"},{"op":"RAMIRO AMADOR PEREZ","lic":"VER0213467"},{"op":"FIDEL AQUINO PEREZ","lic":"VER0304791"},{"op":"HERNANDEZ DE LA CRUZ MOISES","lic":"VER0307850"},{"op":"SAMUEL ALEGRIA HERNANDEZ","lic":"VER0308069"},{"op":"RICARDO AVILA RICARDEZ","lic":"VER0308492"},{"op":"FREDDY GIOVANNI FLORES PALACIO","lic":"VER0308734"},{"op":"NAHIN CRUZ TORRES","lic":"VER0309113"},{"op":"JOSE GUSTAVO HIDALGO VIDAL","lic":"VER0309153"},{"op":"CARLOS EDUARDO HERNANDEZ SANDOVAL","lic":"VER0309187"},{"op":"LOPEZ CASTAÑEDA JUAN CARLOS","lic":"VER0401719"},{"op":"RUBEN MARTINEZ GARCIA","lic":"VER0402368"},{"op":"CORONA BALDO DIEGO IRADIER","lic":"VER0408965"},{"op":"MARIA MAURICIO ROMERO SANTA","lic":"VER0410673"},{"op":"CRISTHOFER JUAREZ CRUZ","lic":"VER0411424"},{"op":"JOSELITO RIVERA SALAS","lic":"VER0412801"},{"op":"FRANCISCO JAVIER CORRO PEÑA","lic":"VER101200"},{"op":"JAVIER PEREZ SORCIA","lic":"VER121890"},{"op":"JOSE DEL CARMEN URGEL PEREZ","lic":"VER300408"},{"op":"LUIS SANTIAGO RODRIGUEZ","lic":"YUC0000104"},{"op":"JOSE DARIO SOBERANIS LOPEZ","lic":"YUC0006506"},{"op":"PABLO ALAIN QUINTAL PECH","lic":"YUC000993736"},{"op":"SIMON VAZQUEZ VAZQUEZ","lic":"YUC0010339"},{"op":"FABIAN AUGUSTO SULUB ORTIZ","lic":"YUC0010363"},{"op":"CARLOS ALEJANDRO POOT TOLOSA","lic":"YUC0011434"},{"op":"FRANCISCO JAVIER HERNANDEZ TZEEL","lic":"YUC0011548"},{"op":"ACOSTA RAMIREZ JULIO CESAR","lic":"YUC0011574"},{"op":"MARCOS MARTIN SOLIS PACHECO","lic":"YUC0066602"},{"op":"DANIEL DE JESUS RAMOS DOMINGUEZ","lic":"YUC0067765"},{"op":"PABLO ENRIQUE EK TOLOSA","lic":"YUC0068963"},{"op":"DAVID GUSTAVO LOPEZ GONZALEZ","lic":"YUC0069308"},{"op":"GARCIA DE LA O HENRY JESUS","lic":"YUC0069538"},{"op":"CESAR LEOPOLDO GUZMAN CATZIN","lic":"YUC0069682"},{"op":"JOSE ANGEL PERDOMO TUN","lic":"YUC0069766"},{"op":"DANIEL PEREZ LOPEZ","lic":"YUC00070061"},{"op":"EDUARDO ANTONIO POLANCO BRITO","lic":"LFD01216997"},{"op":"JESUS MANUEL DOMINGUEZ ARIAS","lic":"LFD01106452"},{"op":"RICARDO ALEJANDRO DOMINGUEZ DE LA CRUZ","lic":"LFD01120776"},{"op":"LUIS ENRIQUE CONTRERAS ACOSTA","lic":"LFD01025277"},{"op":"ALEXANDER ZAPATA GONZALEZ","lic":"LFD01126405"},{"op":"ISRAEL CONTRERAS RAMIREZ","lic":"TAB0014854"},{"op":"JORGE IVAN HERNANDEZ RAMOS","lic":"LEFD00046025"},{"op":"MIGUEL ANGEL HERNANDEZ CRUZ","lic":"TAB0009541"},{"op":"RENE PEREZ ARIAS","lic":"LFD00981760"},{"op":"MANUEL AGUILAR CRUZ","lic":"LFD01189489"},{"op":"ROGER DE LA ROSA RUIZ","lic":"CAMP002112"},{"op":"CARLOS ABELARDO ASCENCIO SANCHEZ","lic":"TAB0011547"},{"op":"MANUEL VIDAL GUZMAN","lic":"TAB0005208"},{"op":"CESAR ARTURO HERNANDEZ GONZALEZ","lic":"LFD01018480"},{"op":"TRINIDAD DENIS ALCUDIA","lic":"TAB0008792"},{"op":"GENARO MACIAS TAFOLLA","lic":"YUC0005213"},{"op":"ADOLFO CORDOBA PEREZ","lic":"LFD01000445"},{"op":"BENITO JUAREZ SOBERANO","lic":"LFD00062440"},{"op":"JOSE IVAN ALEJANDRO JIMENEZ","lic":"LFD0121027B"},{"op":"LUIS GENARO CASTELLANOS DE LA O","lic":"LFD01104269"},{"op":"ANGEL LEON MEGNCHUN","lic":"LFD00019141"},{"op":"SATURNINO JIMENEZ GARCIAS","lic":"TAB0000014"},{"op":"JESUS MANUEL LEON MARTINEZ","lic":"LFD00995143"},{"op":"JUAN LAZARO CRUZ GARCIA","lic":"LFD01109199"},{"op":"HERMAN ENRIQUE PRIMO BRINDIS","lic":"TAB0012593"},{"op":"JESUS FUENTES HERNANDEZ","lic":"LFD00108306"},{"op":"GUADALUPE DE JESUS NOH VILLARINO","lic":"LFD1167152"},{"op":"GERARDO JAVIER MONTEJO RAMOS","lic":"QROO045719"},{"op":"VICTOR HUGO LEON GONZALEZ","lic":"TAB0005603"},{"op":"LUIS DAVID HERNANDEZ INTERIANO","lic":"TAB0012844"},{"op":"ADRIAN VAZQUEZ DELGADO","lic":"CHIS015939"},{"op":"ROBERTO BAUTISTA RAMOS","lic":"TAB0010494"},{"op":"RAFAEL MARTINEZ LOPEZ","lic":"LFD01139445"},{"op":"JOSE DEL CARMEN SEGUNDO NOTARIO","lic":"LFD01181435"},{"op":"LUIS ARMANDO CRUZ ARIAS","lic":"LFD01142432"},{"op":"ANGEL ALEJANDRO HERNANDEZ CORDOVA","lic":"TAB0008327"},{"op":"EMMANUEL TORRES HERNANDEZ","lic":"16CH2385235"},{"op":"JORGE ARMANDO MAY HIDALGO","lic":"LFD0159455"},{"op":"AZUEL RAMIREZ GONZALEZ","lic":"VER0408206"},{"op":"ARTURO BOUCHOT CRUZ","lic":"LFD00988380"},{"op":"IGNACIO GONZALEZ MARTINEZ","lic":"LFD00053901"},{"op":"NATANAEL DAMIAN HERNANDEZ","lic":"CAMP005137"},{"op":"JUAN PEREGRINO LOPEZ","lic":"TAB0003214"},{"op":"JESUS ANTONIO GUZMAN LOPEZ","lic":"LFD011115448"},{"op":"AGUSTIN COBOS PEREZ","lic":"TAB0006135"},{"op":"CARLOS MANUEL RAMON CRISTIANI","lic":"TAB0004917"},{"op":"JOSE DAMIAN HERNANDEZ ROBLES","lic":"TAB0015266"},{"op":"MARIO ROBERTO RUIZ HIDALGO","lic":"TAB0014934"},{"op":"OSCAR ARMANDO IZQUIERDO GONZALEZ","lic":"TAB0015700"},{"op":"REY DAVID RODRIGUEZ MADRIGAL","lic":"YUC0070127"},{"op":"FRANCISCO JESUS JIMENEZ GONZALEZ","lic":"LFD01082536"},{"op":"ABNER DE DIOS RUEDA","lic":"LFD00991075"},{"op":"JORGE CASIMORO MENDOZA LUCIANO","lic":"LFD1121116"},{"op":"VICTOR HERNANDEZ AGUIRRE","lic":"LFD01159277"},{"op":"JOSE CARLOS BURELO TORRES","lic":"LFD00027271"},{"op":"ENRIQUE SANCHEZ SANTIAGO","lic":"TAB0008183"},{"op":"RAMON PERALTA GONZALEZ","lic":"LFD01050462"},{"op":"ALEJANDRO VILLAREAL LOPEZ","lic":"TAB001555"},{"op":"JORGE PEREZ DIAZ","lic":"TAB0005377"},{"op":"JIMMY CRUZ MADRIGAL","lic":"LFD01029509"},{"op":"ROBERTO MARIN GUARDADO","lic":"LFD0121558"},{"op":"JEUS ANTONIO ARCOS POZO","lic":"TAB0009878"},{"op":"MARCOS CABRERA GARCIA","lic":"LFD01101479"},{"op":"LUIS ALFREDO MACHIN GONZALEZ","lic":"LFD00985184"},{"op":"NEFTHALY BEAURREGARD CHABLE","lic":"TAB009005"},{"op":"JOSE ENRIQUE LOPEZ GALDUZA","lic":"YUC0006495"},{"op":"CARLOS ANTONIO DE LA CRUZ VALIEL","lic":"TAB009804"},{"op":"JUAN GALACION MARTINEZ MADRIGAL","lic":"CHIS015898"},{"op":"SERGIO JESUS ESPINOSA TORRES","lic":"TAB0010135"},{"op":"IVAN ANTONIO DE LA CRUZ MORENO","lic":"CHIS01050962"},{"op":"GUILLERMO HERNANDEZ GARCIA","lic":"LFD01130429"},{"op":"CARLOS ALBELARDO ASCENCIO SANCHEZ","lic":"TAB00001547"},{"op":"JESUS MANUEL MORALES FRIAZ","lic":"LFD0001169"},{"op":"JOSE CONCEPCION CORDOVA SELVAN","lic":"LFD000986072"},{"op":"LUIS EVELIO CASTILLO MARTINEZ","lic":"MOR0013486"},{"op":"NEFTHALY BEAURREGARD","lic":"TAB0009005"},{"op":"SEBASTIAN DAVID JUAREZ CASTILLO","lic":"LFD00004581"},{"op":"MARCELINO REYES GARCIA","lic":"TAB03605"},{"op":"CANDELARIO MENDEZ BALCAZAR","lic":"LFD01126082"},{"op":"HUMBERTO JOSE HERNANDEZ DE LA CRUZ","lic":"LFD01174809"},{"op":"LEONARDO CORDOVA DIAZ","lic":"TAB0016465"},{"op":"ULISES RAMIREZ RODRIGUEZ","lic":"VER0307667"},{"op":"FABIAN JIMENEZ PEREZ","lic":"YUC0069630"},{"op":"OSCAR ELIAS EMETERIO JAVIER","lic":"TAB00010121"},{"op":"ARTURO GUZMAN VILLEGAS","lic":"TAB0005266"},{"op":"URIAS NARANJO ESTRADA","lic":"TAB0007208"},{"op":"ANGEL RODRIGO CAUICH AKE","lic":"LFD01041318"},{"op":"JUAN CARLOS ARIAS PEREZ","lic":"VER 0306859"},{"op":"MARCO CABRERA GARCIA","lic":"LFD01101479"},{"op":"JULIO CESAR MONTEJO GOMEZ","lic":"LFD01072469"},{"op":"EBER ALEXIS MENDEZ BENITES","lic":"99CH2284311"},{"op":"HUGO ENRIQUE MORALES CALIX","lic":"LFD01094133"},{"op":"REYES ANDRES VILLAREAL GOMEZ","lic":"TAB00079780"},{"op":"JESUS MAXIMILIANO ANTONIO FLORES","lic":"TAB987412"},{"op":"ROMERO CHAN JOB","lic":"CAMP005567"},{"op":"IVIDIO GARCIA ROJAS","lic":"TAB0007906"},{"op":"ITALDO DE JESUS RAMIREZ MENDOZA","lic":"LFD01094286"},{"op":"CARLOS EBELARDO ASCENCIO SANCHEZ","lic":"TAB0011547"},{"op":"CARLOS ANTONIO DE LA CRUZ VAHER","lic":"TAB0009804"},{"op":"RODRIGO RIOS CRUZ","lic":"CHIS015914"},{"op":"CESAR ANDRES SAN LUCAS DIEGO","lic":"LFD01052832"},{"op":"DANIEL TORRES DE LA O","lic":"LFD01195143"},{"op":"CESAR EDUARDO SANCHEZ JIMENEZ","lic":"LFD01219588"},{"op":"JOSE JUAN ALEJANDRO JIMENEZ","lic":"LFD01210278"},{"op":"RODOLFO MORAN MOTA","lic":"NVO064784"},{"op":"FILIBERTO HERNANDEZ GUZMAN","lic":"CAMP005284"},{"op":"ASUNCION GOMEZ DE LA CRUZ","lic":"LFD01206719"},{"op":"FRANKLIN BAUTISTA DE LOS SANTOS","lic":"LFD01180571"},{"op":"PABLO TORRES DE LA CRUZ","lic":"LFD0004782"},{"op":"MANASES DOMINGUEZ BAUTISTA","lic":"LFD01135707"},{"op":"JUAN CARLOS DE LA O CASTILLO","lic":"TAB0015744"},{"op":"VICTOR MANUEL OVANDO RODRIGUEZ","lic":"LFD01188497"},{"op":"CARLOS EDUARDO DE LOS SANTOS LEON","lic":"LFD01167375"},{"op":"DENIS ALBERTO PEREZ GONZALEZ","lic":"TAB0012602"},{"op":"AGUSTIN ALONSO DE LA ROSA CONCEPCION","lic":"LFD00990338"},{"op":"JUAN MANUEL TORRES SILVA","lic":"TAB0003026"},{"op":"ALEAZAR CONTRERAS ACOSTA","lic":"LFD00048777"},{"op":"JUAN GABRIEL GARCIA ALVAREZ","lic":"QRO0044366"},{"op":"JORGE LUIS MORALES LOPEZ","lic":"CHIS016241"},{"op":"SATURNINO JIMENEZ GARCIA","lic":"TAB00000144"},{"op":"PASTOR CASTRO QUEVEDO","lic":"TAB0007521"},{"op":"FRANCISCO JAVIER BEYTIA DZUL","lic":"YUC0010387"},{"op":"ABEL ARIAS RODRIGUEZ","lic":"VER302112"},{"op":"MANUEL NAVARRETE ESCOFIE","lic":"CAMP003675"},{"op":"ALEXIS DE JESUS BEJERANO MORALES","lic":"TAB00014441"},{"op":"PABLO GOMEZ LOPEZ","lic":"LFD00025426"},{"op":"JOSE EDUARDO VILLEGAS PRIETO","lic":"LFD01039624"},{"op":"ULISES RAMIREZ","lic":"TAB0011037"},{"op":"JOSE MAGAÑA MARTINEZ","lic":"LFD00996022"},{"op":"CARLOS MARIO VALENCIA HERNANDEZ","lic":"TAB0009634"},{"op":"JESUS ANTONIO CARPIZO GONZALEZ","lic":"CAMP003230"},{"op":"ALEX MANUEL ESCALANTE MENDEZ","lic":"LFD01007715"},{"op":"ALEXANDER GARCIA JIMENEZ","lic":"TAB0014738"},{"op":"HERIBERTO RODRIGUEZ ELIAS","lic":"LFD01186619"},{"op":"WILLIAM BAUTISTA MORALES","lic":"LFD01067569"},{"op":"GABRIEL HERNANDEZ MARTINEZ","lic":"LFD01104502"},{"op":"ALEJANDRO IZQUIERDO SANCHEZ","lic":"TAB0016461"},{"op":"ANTONIO LARA HERNANDEZ","lic":"CAMP001584"},{"op":"DAVID AARON SOLANO OSORIO","lic":"TAB0010254"},{"op":"JOSE OTILIO MONTESINO ORTIZ","lic":"CHIS006702"},{"op":"JESUS CHONTAL SAQUERO","lic":"LFD00986414"},{"op":"GABRIEL ORTEGA GARCIA","lic":"LFD01110139"},{"op":"CARLOS ARTURO MENA GONZALEZ","lic":"TAB001240"},{"op":"MARVIN DE LA CRUZ DANTORI","lic":"LFD00105516"},{"op":"ALFREDO ALEJANDRO VALENCIA HERNANDEZ","lic":"LFD00100518"},{"op":"YELMI ARTURO PEREZ GARCIA","lic":"LFD0098991"},{"op":"ARTURO IZQUIERDO GONZALEZ","lic":"TAB0009443"},{"op":"JOSE VICTOR PEREZ AGUIRRE","lic":"LFD00038447"},{"op":"LUIS MANUEL CRUZ LOPEZ","lic":"VER129636"},{"op":"MIGUEL ANGEL RIVERA GARAY","lic":"LFD0008318"},{"op":"JORGE ADRIANA MORALES JIMENEZ","lic":"TAB0011291"},{"op":"MOISES SUAREZ RODAS","lic":"TAB0015550"},{"op":"PEDRO LUIS MORALES JIMENEZ","lic":"TAB0015706"},{"op":"ANTONIO ARAGON MALDONADO","lic":"VER0305942"},{"op":"LUIS ALBERTO MARTINEZ PRIEGO","lic":"LFD00017232"},{"op":"ALEXIS JESUS BEJERANO MORALES","lic":"TAB0014444"},{"op":"HERNAN DIAZ MORALES","lic":"LFD00068517"},{"op":"WILBER MENDOZA LOPEZ","lic":"CHIS016240"},{"op":"CARLOS ISAI MORALES COLORADO","lic":"LFD01018820"},{"op":"GIOVANNY LOPEZ AGUILAR","lic":"LFD01120312"},{"op":"LORENZO GONZALES DE LA CRUS","lic":"TAB0003510"},{"op":"HEIDER ALBERTO LOPEZ PEREZ","lic":"VER0140875"},{"op":"JORGE ADRIAN MORALES JIMENEZ","lic":"TAB011291"},{"op":"DANIEL GONZALEZ RAMOS","lic":"VER0309190"},{"op":"MANUEL DAVID ORTIZ GARCIA","lic":"LFD00082852"},{"op":"JOSE EDUARDO TORRES GARCIA","lic":"TAB0013260"},{"op":"ORLANDO MENESES CORREA","lic":"tab0010568"},{"op":"JESUS CORTAZAR MADRIGAL","lic":"LFD01191325"},{"op":"JONATHAN HERNANDEZ SANCHEZ","lic":"LFD01180283"},{"op":"FRANCISCO JAVIER ASCENCIO UTRERA","lic":"TAB0014623"},{"op":"HEBERTO RODRIGUEZ ALEJANDRO","lic":"TAB0005342"},{"op":"ALEJANDRO DE LA ROSA PEREZ","lic":"TAB0008742"},{"op":"VICTOR MANUEL GONZALEZ RAMIRES","lic":"LFD01005717"},{"op":"ADONAI OVANDO ANGULO","lic":"TAB0009239"},{"op":"LUIS ALBERTO ROMERO MORALES","lic":"VER014864"},{"op":"JOSE ALFREDO JIMENEZ FRIAS","lic":"LFD00010721"},{"op":"EDGAR SAUL ESPAÑA CERVERA","lic":"YUC00450"},{"op":"CARLOS MIGUEL HERNANDEZ CEN","lic":"LFD1146817"},{"op":"WILLIAMS ABIGAIL SANCHEZ","lic":"TAB0008832"},{"op":"MARIO PERALTA MORAL","lic":"LFD01011975"},{"op":"ISMAEL GARCIA TORRES","lic":"LFD01177368"},{"op":"DAVID AGUSTIN LOPEZ MENDEZ","lic":"LFD00026104"},{"op":"RICARDO RODRIGUEZ ALMEIDA","lic":"LFD01223423"},{"op":"LUIS FERNANDO DE LOS SANTOS LOPEZ","lic":"TAB0008731"},{"op":"JOSE EDUARDO NARANJO GONZALEZ","lic":"CAMP005209"},{"op":"MOISES FERNANDO HERNANDEZ JIMENEZ","lic":"LFD01225891"},{"op":"FRANCISCO RAMIRO CERINO SANTIAGO","lic":"LFD01218549"},{"op":"FRANCISCO JAVIER ESTEBAN DE LA CRUZ","lic":"TAB0045583"},{"op":"ROSARIO MAYO OLAN","lic":"TAB0008188"},{"op":"HUGO HERNANDEZ COLORADO","lic":"TAB0010436"},{"op":"JOHNNY DE JESUS NARES LOPEZ","lic":"TAB0006235"},{"op":"MARGARITO DE JESUS MAGAÑA HERNANDEZ","lic":"LFD01163137"},{"op":"HUGO ALBERTO REYES PERALTA","lic":"CAMP001732"},{"op":"JOSE DEL CARMEN RICARDEZ HERNANDEZ","lic":"TAB0005130"},{"op":"JORGE GILBERTO MARTINEZ CUELLAR","lic":"TAB0005689"},{"op":"JUAN JOSE FRIAS SELVAN","lic":"TAB0007094"},{"op":"ESTEBAN MARTINEZ MARTINEZ","lic":"TAMPT09639"},{"op":"LEONCITO ALVARADO MARINEZ","lic":"DF00195821"},{"op":"MOISES HERNANDEZ GUZMAN","lic":"LFD01230737"},{"op":"CHEYENE MORALES MORALES","lic":"TAB0013031"},{"op":"JOSE LUIS GARCIA MARRUFO","lic":"LFD01165169"},{"op":"ALEJANDRO VAZQUEZ NAVA","lic":"DF01154849"},{"op":"IVAN URIEL BOCANEGRA VARGAS","lic":"LFD01227674"},{"op":"WILBERTH ALFREDO CRUZ BALAN","lic":"YUC0070210"},{"op":"ROMEO CHANJOB","lic":"CAMP005567"},{"op":"SAUL ALCUDIA MARQUEZ","lic":"TAB0008820"},{"op":"FRANCO CALET CONDE","lic":"LFD001205667"},{"op":"JUAN JOSE DE LA O PEREZ","lic":"TAB0005656"},{"op":"JUAN ANTONIO CRUZ GUZMAN","lic":"QRO0042334"},{"op":"OMAR ROSALES OARAMAS","lic":"TAB0008387"},{"op":"JUAN MIGUEL GARCIA HERNANDEZ","lic":"TAB0010774"},{"op":"CARLOS CHRISTOPHER LANDEROS GOMEZ","lic":"LFD00063700"},{"op":"NEFTALI LOPEZ TORRES","lic":"TAB0012042"},{"op":"URIEL LOPEZ ALONSO","lic":"TAB0008434"},{"op":"MAURICIO MENDEZ PEREZ","lic":"TAB0015156"},{"op":"JONATHAN YAIR HERNANDEZ SANCHEZ","lic":"LFD01180283"},{"op":"CAMDELARIO MENDEZ BALCAZAR","lic":"LFD01126082"},{"op":"JOHNNY JESUS NARES LOPEZ","lic":"TAB0006235"},{"op":"MARCO ANTONIO DE LOS SANTOS DE LA","lic":"CAMP003735"},{"op":"JESUS GUADALUPE BEAURREGARD ARIAS","lic":"TAB0013510"},{"op":"FILIBERTO HERNADNEZ GUZMAN","lic":"LFD01064963"},{"op":"YOSMAR MARTINEZ HERNANDEZ","lic":"LFD01126441"},{"op":"ALEJANDRO DE LA CRUZ ROSA PEREZ","lic":"TAB0008742"},{"op":"WILLIAN BAUTISTA MORALES","lic":"LFD01067569"},{"op":"SERGIO JESUS ESPINOZA TORRES","lic":"TAB0010153"},{"op":"JOSE MANUEL AGUILAR GARCIA","lic":"TAB0011676"},{"op":"RICARDO CONCEPCION DIAS","lic":"LFD00025441"},{"op":"LUIS ALBERTO GARCIA MADRIGAL","lic":"TAB0015979"},{"op":"JOSE WILBERT HERNANDEZ MURILLO","lic":"TAB0005503"},{"op":"JUAN GABRIEL LUNA GUARDADO","lic":"TAB008878"},{"op":"ROMEO CHAN JOB","lic":"CAMP005567"},{"op":"FIFLIBERTO HERNANDEZ GUZMAN","lic":"LFD01064963"},{"op":"ADRIAN IZQUIERDO ZAVALA","lic":"TAB0014840"},{"op":"JESUS DANIEL FELIX JIMENEZ","lic":"QRO0040331"},{"op":"JOSUE PEREZ CANO","lic":"TAB0005039"},{"op":"ISAIAS GARCIA GAMAS","lic":"VER0306029"},{"op":"ROSENDO JIMENEZ MARTINEZ","lic":"LFD01202065"},{"op":"FRANCO CALET CONDE COLORADO","lic":"LFD01205667"}]/*CATALOG_JSON_END*/;
+
+function initCatalog() {
+  State.catalog = new Map();
+  for (const { op, lic } of CATALOG_DATA) State.catalog.set(normOp(op), lic);
+  UI.renderCatalog();
+}
+
+function saveCatalog() {
+  const entries = [...State.catalog.entries()].map(([op, lic]) => ({ op, lic }));
+  const json    = JSON.stringify(entries);
+  let html      = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+  const START   = '/*CATALOG_JSON_START*/';
+  const END     = '/*CATALOG_JSON_END*/';
+  const s = html.indexOf(START), e = html.indexOf(END);
+  if (s === -1 || e === -1) { UI.setCatStatus('No se encontró el slot — recarga la página','err'); return; }
+  html = html.slice(0, s + START.length) + json + html.slice(e);
+  const blob = new Blob([html], { type: 'text/html' });
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = 'SmartDispatch-v2.html';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  UI.setCatStatus(`✓ Guardado con ${entries.length} operadores`, 'ok');
+}
+
+/* ─────────────────────────────────────────────────────────────
+   9. SMART VALIDATION ENGINE v1.1
+───────────────────────────────────────────────────────────── */
+const SVE_CRIT = 'CRÍTICA';
+const SVE_WARN = 'ADVERTENCIA';
+const SVE_INFO = 'INFORMATIVA';
+
+function runSVE(rows) {
+  if (!rows || !rows.length) { UI.resetSVE(); return; }
+
+  const raw = [];
+  // rawAdd signature: (sev, rule, ruta, field, desc, action, extra, rowIds?)
+  // rowIds: optional array of _rowId values identifying the exact merged row(s)
+  // this issue refers to. When provided, EditSystem uses them for precise lookup
+  // instead of falling back to RUTA string matching.
+  const rawAdd = (sev, rule, ruta, field, desc, action, extra, rowIds) =>
+    raw.push({ sev, rule,
+               ruta:   String(ruta||'').trim(),
+               field:  String(field||'').trim(),
+               desc:   String(desc||'').trim(),
+               action: String(action||'').trim(),
+               extra:  String(extra||'').trim(),
+               rowIds: Array.isArray(rowIds) ? rowIds : [] });
+
+  const matched = rows.filter(r => r._matched);
+
+  // Helper: collect _rowId values for all rows matching a given RUTA
+  const rowIdsByRuta = ruta =>
+    rows.filter(r => String(r['RUTA']||'').trim() === ruta).map(r => r._rowId).filter(Boolean);
+
+  // A: Marchamos duplicados entre rutas distintas
+  // marchMap stores: marc → { ruta, rowId }  — keeps the first row that claimed each marchamo
+  const marchMap = new Map();
+  rows.forEach(r => {
+    const ruta = String(getMapped(r,'RUTA')||'').trim();
+    for (let m = 1; m <= 5; m++) {
+      const marc = String(getMapped(r,`MARCHAMO ${m}`)||'').trim();
+      if (!marc || marc === '0') continue;
+      if (marchMap.has(marc)) {
+        const prev = marchMap.get(marc);
+        if (prev.ruta !== ruta) {
+          // Two distinct rutas claim the same marchamo — expose both rowIds so
+          // the user can pick which one to correct from the route selector.
+          rawAdd(SVE_CRIT,'dup_march', ruta, `MARCHAMO ${m}`,
+            `Marchamo ${marc} asignado a ruta ${ruta} y también a ruta ${prev.ruta}.`,
+            'Confirma con la documentación cuál ruta lleva este marchamo.',
+            marc,
+            [prev.rowId, r._rowId].filter(Boolean));
+        }
+      } else {
+        marchMap.set(marc, { ruta, rowId: r._rowId });
+      }
+    }
+  });
+
+  // B: Tarimas idénticas en múltiples líneas de la misma ruta
+  const lineCount = new Map(), tarMap = new Map();
+  rows.forEach(r => {
+    const ruta = String(getMapped(r,'RUTA')||'').trim();
+    const tar  = String(getMapped(r,'TARIMAS')||'').trim();
+    if (!ruta) return;
+    lineCount.set(ruta, (lineCount.get(ruta)||0) + 1);
+    if (tar && tar !== '0') {
+      if (!tarMap.has(ruta)) tarMap.set(ruta, new Set());
+      tarMap.get(ruta).add(tar);
+    }
+  });
+  lineCount.forEach((cnt, ruta) => {
+    if (cnt < 2) return;
+    const vals = tarMap.get(ruta);
+    if (vals && vals.size === 1) rawAdd(SVE_WARN,'dup_tarimas', ruta, 'TARIMAS',
+      `Ruta ${ruta}: las ${cnt} líneas comparten el mismo conteo de tarimas (${[...vals][0]}) — posible asignación duplicada de PDF.`,
+      'Verifica si el PDF se asignó a múltiples líneas por error.',
+      `${[...vals][0]} tar. × ${cnt} líneas`,
+      rowIdsByRuta(ruta));
+  });
+
+  // C: Registros sin RUTA
+  let noRutaCnt = 0;
+  rows.forEach(r => { if (!String(getMapped(r,'RUTA')||'').trim()) noRutaCnt++; });
+  if (noRutaCnt) rawAdd(SVE_CRIT,'missing_ruta','','RUTA',
+    `${noRutaCnt} registro${noRutaCnt>1?'s':''} sin número de RUTA.`,
+    'Revisa el Excel macro: busca filas con columna RUTA vacía.',
+    noRutaCnt > 1 ? `×${noRutaCnt}` : '');
+
+  // D: Campos obligatorios vacíos — consolidado por ruta
+  // Track per-row which fields are missing so we can store the exact rowId
+  const missingByRuta = new Map();
+  const REQ = [
+    { field:'OPERADOR', label:'Operador', sev:SVE_CRIT },
+    { field:'TARIMAS',  label:'Tarimas',  sev:SVE_CRIT },
+    { field:'LIC.',     label:'Licencia', sev:SVE_WARN },
+  ];
+  matched.forEach(r => {
+    const ruta = String(getMapped(r,'RUTA')||'').trim();
+    if (!ruta) return;
+    REQ.forEach(({ field, label, sev }) => {
+      if (!String(getMapped(r, field)||'').trim()) {
+        if (!missingByRuta.has(ruta)) missingByRuta.set(ruta, { fields: new Set(), sev: SVE_WARN, rowIds: new Set() });
+        const e = missingByRuta.get(ruta);
+        e.fields.add(label);
+        if (r._rowId) e.rowIds.add(r._rowId);
+        if (sev === SVE_CRIT) e.sev = SVE_CRIT;
+      }
+    });
+  });
+  missingByRuta.forEach(({ fields, sev, rowIds }, ruta) => {
+    const fl  = [...fields].join(', ');
+    const act = fields.has('Licencia') && fields.size === 1
+      ? 'Agrega al operador en el catálogo.' : 'Revisa el PDF de esta ruta.';
+    rawAdd(sev,'missing', ruta, fl,
+      `Ruta ${ruta}: campo${fields.size>1?'s':''} incompleto${fields.size>1?'s':''} — ${fl}.`,
+      act, '', [...rowIds]);
+  });
+
+  // E: Sin marchamo principal — consolidado por ruta
+  const noMarchByRuta = new Map();
+  matched.forEach(r => {
+    const ruta = String(getMapped(r,'RUTA')||'').trim();
+    const m1   = String(getMapped(r,'MARCHAMO 1')||'').trim();
+    if (!m1 || m1 === '0') {
+      if (!noMarchByRuta.has(ruta)) noMarchByRuta.set(ruta, { cnt: 0, rowIds: new Set() });
+      const e = noMarchByRuta.get(ruta);
+      e.cnt++;
+      if (r._rowId) e.rowIds.add(r._rowId);
+    }
+  });
+  noMarchByRuta.forEach(({ cnt, rowIds }, ruta) => {
+    const tot = lineCount.get(ruta) || 1;
+    rawAdd(SVE_WARN,'no_march', ruta,'MARCHAMO 1',
+      `Ruta ${ruta}: sin marchamo principal${cnt>1?` (${cnt}/${tot} líneas)`:''}. `,
+      'Verifica que el PDF contenga número de marchamo.',
+      cnt>1 ? `×${cnt} líneas`:'',
+      [...rowIds]);
+  });
+
+  // F: Tarimas = 0 — consolidado por ruta
+  const zeroTarByRuta = new Map();
+  matched.forEach(r => {
+    const ruta = String(getMapped(r,'RUTA')||'').trim();
+    const tar  = parseInt(String(getMapped(r,'TARIMAS')||'0').replace(/\D/g,''), 10);
+    if (isNaN(tar) || tar === 0) {
+      if (!zeroTarByRuta.has(ruta)) zeroTarByRuta.set(ruta, { cnt: 0, rowIds: new Set() });
+      const e = zeroTarByRuta.get(ruta);
+      e.cnt++;
+      if (r._rowId) e.rowIds.add(r._rowId);
+    }
+  });
+  zeroTarByRuta.forEach(({ cnt, rowIds }, ruta) => rawAdd(SVE_WARN,'zero_tar', ruta,'TARIMAS',
+    `Ruta ${ruta}: tarimas = 0 o no detectadas.`,
+    'Confirma que el PDF esté correctamente asignado a esta ruta.',
+    cnt>1?`×${cnt} líneas`:'',
+    [...rowIds]));
+
+  // G: Tarimas > 60 — consolidado por ruta
+  const highTarByRuta = new Map();
+  matched.forEach(r => {
+    const ruta = String(getMapped(r,'RUTA')||'').trim();
+    const tar  = parseInt(String(getMapped(r,'TARIMAS')||'0').replace(/\D/g,''), 10);
+    if (tar > 60) {
+      const prev = highTarByRuta.get(ruta) || { tar: 0, rowIds: new Set() };
+      if (tar > prev.tar) prev.tar = tar;
+      if (r._rowId) prev.rowIds.add(r._rowId);
+      highTarByRuta.set(ruta, prev);
+    }
+  });
+  highTarByRuta.forEach(({ tar, rowIds }, ruta) => rawAdd(SVE_WARN,'high_tar', ruta,'TARIMAS',
+    `Ruta ${ruta}: tarimas inusualmente altas (${tar}).`,
+    'Confirma si es una carga doble o error de lectura de PDF.',
+    `${tar} tar.`,
+    [...rowIds]));
+
+  // H: Rutas sin PDF — una alerta por ruta
+  const noPdfByRuta = new Map();
+  rows.forEach(r => {
+    if (r._matched) return;
+    const ruta = String(getMapped(r,'RUTA')||'').trim();
+    if (!ruta) return;
+    if (!noPdfByRuta.has(ruta)) noPdfByRuta.set(ruta, { cnt: 0, rowIds: new Set() });
+    const e = noPdfByRuta.get(ruta);
+    e.cnt++;
+    if (r._rowId) e.rowIds.add(r._rowId);
+  });
+  noPdfByRuta.forEach(({ cnt, rowIds }, ruta) => rawAdd(SVE_WARN,'no_pdf', ruta,'OPERADOR / LIC. / MARCHAMOS',
+    `Ruta ${ruta} sin PDF asociado${cnt>1?` (${cnt} entregas)`:''}.`,
+    'Carga el PDF de esta ruta o verifica el nombre del archivo.',
+    cnt>1?`${cnt} entregas`:'',
+    [...rowIds]));
+
+  // I: Sin factura — consolidado por ruta
+  const noFacByRuta = new Map();
+  matched.forEach(r => {
+    const ruta = String(getMapped(r,'RUTA')||'').trim();
+    if (!String(getMapped(r,'FAC.')||'').trim()) {
+      if (!noFacByRuta.has(ruta)) noFacByRuta.set(ruta, { cnt: 0, rowIds: new Set() });
+      const e = noFacByRuta.get(ruta);
+      e.cnt++;
+      if (r._rowId) e.rowIds.add(r._rowId);
+    }
+  });
+  noFacByRuta.forEach(({ cnt, rowIds }, ruta) => rawAdd(SVE_INFO,'no_fac', ruta,'FAC.',
+    `Ruta ${ruta}: sin factura extraída del PDF${cnt>1?` (${cnt} líneas)`:''}. `,
+    'El PDF puede no contener facturas 4659xxxxxx o el patrón no coincidió.',
+    cnt>1?`×${cnt}`:'',
+    [...rowIds]));
+
+  // J: Marchamos con formato incorrecto — consolidado por ruta
+  const badMarchByRuta = new Map();
+  matched.forEach(r => {
+    const ruta = String(getMapped(r,'RUTA')||'').trim();
+    for (let m = 1; m <= 5; m++) {
+      const marc = String(getMapped(r,`MARCHAMO ${m}`)||'').trim();
+      if (!marc || marc==='0') continue;
+      if (!/^\d{5,6}$/.test(marc.replace(/^0/,''))) {
+        if (!badMarchByRuta.has(ruta)) badMarchByRuta.set(ruta, { vals: new Set(), rowIds: new Set() });
+        const e = badMarchByRuta.get(ruta);
+        e.vals.add(marc);
+        if (r._rowId) e.rowIds.add(r._rowId);
+      }
+    }
+  });
+  badMarchByRuta.forEach(({ vals, rowIds }, ruta) => {
+    const sample = [...vals].slice(0,3).join(', ') + (vals.size>3?'…':'');
+    rawAdd(SVE_INFO,'bad_march', ruta,'MARCHAMOS',
+      `Ruta ${ruta}: ${vals.size} marchamo${vals.size>1?'s':''} con formato inesperado (${sample}).`,
+      'Los marchamos deben ser numéricos de 5-6 dígitos.',
+      vals.size>1?`×${vals.size}`:'',
+      [...rowIds]);
+  });
+
+  // K: Integridad UI vs memoria
+  const screenCnt = parseInt(document.getElementById('bdgXLS').textContent || '0', 10);
+  if (screenCnt && screenCnt !== rows.length)
+    rawAdd(SVE_CRIT,'integrity','','CONTEO',
+      `Discrepancia: UI muestra ${screenCnt} rutas, memoria contiene ${rows.length}.`,
+      'Recarga la página y vuelve a procesar los archivos.',
+      `UI:${screenCnt}/MEM:${rows.length}`);
+
+  // ── DEDUP ENGINE ──
+  // Key: rule + ruta + field — prevents duplicates from any code path
+  const seen = new Set();
+  const issues = [];
+  for (const issue of raw) {
+    const key = `${issue.rule}||${issue.ruta}||${issue.field}`;
+    if (!seen.has(key)) { seen.add(key); issues.push(issue); }
+  }
+
+  // ── QUALITY SCORE ──
+  const W = { CRÍTICA: 5, ADVERTENCIA: 2, INFORMATIVA: 0.5 };
+  let deductions = 0;
+  issues.forEach(i => { deductions += W[i.sev] || 1; });
+  const quality  = Math.max(0, Math.round(100 - Math.min(100, deductions)));
+  const nCrit    = issues.filter(i => i.sev === SVE_CRIT).length;
+  const nWarn    = issues.filter(i => i.sev === SVE_WARN).length;
+  const nInfo    = issues.filter(i => i.sev === SVE_INFO).length;
+  const nPass    = Math.max(0, 10 - new Set(issues.map(i => i.rule)).size);
+
+  State.sveHasCritical = nCrit > 0;
+  State.sveHasWarnings = nWarn > 0;
+  State.sveLastQuality = quality;
+
+  UI.renderSVE(issues, quality, nCrit, nWarn, nInfo, nPass);
+}
+
+const SVE_ICONS = {
+  'dup_march':'🔖','dup_tarimas':'📦','missing_ruta':'🔴','missing':'🟠',
+  'no_march':'🔴','zero_tar':'📐','high_tar':'📐','no_pdf':'🟡',
+  'no_fac':'ℹ️','bad_march':'ℹ️','integrity':'🔗'
+};
+
+/* ─────────────────────────────────────────────────────────────
+   10. PASTE PANEL
+───────────────────────────────────────────────────────────── */
+function processPaste(raw) {
+  const lines = raw.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) throw new Error('Se necesita encabezado + datos');
+
+  const sep     = lines[0].includes('\t') ? '\t' : lines[0].includes(';') ? ';' : ',';
+  const headers = lines[0].split(sep).map(h => h.trim());
+  const idx     = {};
+
+  headers.forEach((h, i) => {
+    for (const [field, re] of Object.entries(DESP_ALIASES)) {
+      if (re.test(h) && idx[field] === undefined) idx[field] = i;
+    }
+  });
+
+  if (idx.ruta === undefined) throw new Error('No se detectó columna RUTA');
+
+  const result  = new Map();
+  const preview = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(sep).map(c => c.trim());
+    const ruta = cols[idx.ruta] || '';
+    if (!ruta) continue;
+    const row = {
+      hrDesp: idx.hrDesp !== undefined ? normDateTime(cols[idx.hrDesp]||'') : '',
+      caseta: idx.caseta !== undefined ? normDateTime(cols[idx.caseta]||'') : '',
+      wtms:   idx.wtms   !== undefined ? (cols[idx.wtms]||'')               : '',
+      idIda:  idx.idIda  !== undefined ? (cols[idx.idIda]||'')              : ''
+    };
+    result.set(ruta, row);
+    if (preview.length < 5) preview.push({ ruta, ...row });
+  }
+
+  return { data: result, preview, idx };
+}
+
+/* ─────────────────────────────────────────────────────────────
+   11. UI — all DOM mutations live here
+───────────────────────────────────────────────────────────── */
+const UI = {
+
+  // ── Theme ──
+  applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    localStorage.setItem('sd_theme', t);
+    State.theme = t;
+    const btn = document.getElementById('btnTheme');
+    if (btn) btn.textContent = t === 'dark' ? '☀️' : '🌙';
+    document.getElementById('themeOptLight').classList.toggle('selected', t === 'light');
+    document.getElementById('themeOptDark').classList.toggle('selected', t === 'dark');
+  },
+  selectTheme(t) { UI.applyTheme(t); },  // called by data-theme delegation in init
+
+  // ── User ──
+  setUser(name) {
+    State.user = name || '';
+    localStorage.setItem('sd_user', State.user);
+    document.getElementById('tbUserName').textContent = State.user || '—';
+  },
+
+  // ── Modal ──
+  // mode: 'setup' (first run, no skip) | 'settings' (user-triggered, has cancel)
+  openModal(mode) {
+    mode = mode || 'settings';
+    State._modalMode = mode;
+    document.getElementById('nameInput').value = State.user;
+    // Sync theme opts to current theme
+    document.getElementById('themeOptLight').classList.toggle('selected', State.theme === 'light');
+    document.getElementById('themeOptDark').classList.toggle('selected', State.theme === 'dark');
+    // Update copy based on mode
+    if (mode === 'setup') {
+      document.getElementById('modalTitle').textContent = '¡Bienvenido!';
+      document.getElementById('modalSub').textContent = 'Configura tu sesión una sola vez. Esta información se guardará automáticamente.';
+      document.getElementById('nameModalBtn').textContent = 'Guardar y comenzar →';
+    } else {
+      document.getElementById('modalTitle').textContent = 'Configuración de sesión';
+      document.getElementById('modalSub').textContent = 'Actualiza tu nombre o el tema de la interfaz.';
+      document.getElementById('nameModalBtn').textContent = 'Guardar cambios';
+    }
+    document.getElementById('nameModal').classList.remove('hidden');
+    setTimeout(() => document.getElementById('nameInput').focus(), 80);
+  },
+  closeModal(name) {
+    document.getElementById('nameModal').classList.add('hidden');
+    if (name !== null) {
+      UI.setUser(name);
+      // Mark as configured so modal never shows again on load
+      localStorage.setItem('sd_configured', '1');
+    }
+  },
+
+  // ── Pipeline ──
+  setPipeStep(n, state, stat) {
+    const step = document.getElementById('pipeStep' + n);
+    const num  = document.getElementById('pipeNum' + n);
+    const stEl = document.getElementById('pipeStat' + n);
+    step.className = 'pipe-step';
+    if (state === 'done')     { step.classList.add('done');     num.textContent = '✓'; }
+    else if (state === 'active')  { step.classList.add('active');   }
+    else if (state === 'optional'){ step.classList.add('optional'); }
+    if (stat) stEl.textContent = stat;
+  },
+
+  // ── Health rail (topbar) ──
+  updateHealthRail() {
+    const { merged, pdfData } = State;
+    const total = merged.length || 0;
+    const match = merged.filter(r => r._matched).length;
+    const q     = State.sveLastQuality;
+
+    const pdfEl  = document.getElementById('hPDF');
+    const covEl  = document.getElementById('hCov');
+    const qualEl = document.getElementById('hQual');
+    const stEl   = document.getElementById('hStatus');
+
+    // PDFs
+    const pdfCount = new Set([...pdfData.keys()].filter(k => !k.includes('|D|'))).size;
+    pdfEl.textContent = pdfCount || '—';
+    pdfEl.className   = 'health-pill-val ' + (pdfCount > 0 ? 'ok' : 'idle');
+
+    // Coverage
+    const covPct = total ? Math.round(match / total * 100) : null;
+    covEl.textContent = covPct !== null ? covPct + '%' : '—';
+    covEl.className   = 'health-pill-val ' + (covPct === null ? 'idle' : covPct === 100 ? 'ok' : covPct >= 70 ? 'warn' : 'crit');
+
+    // Quality
+    qualEl.textContent = total ? q + '%' : '—';
+    qualEl.className   = 'health-pill-val ' + (!total ? 'idle' : q >= 90 ? 'ok' : q >= 60 ? 'warn' : 'crit');
+
+    // Status
+    if (!total) { stEl.textContent = 'En espera'; stEl.className = 'health-pill-val idle'; }
+    else if (State.sveHasCritical) { stEl.textContent = '⚠ Bloqueado'; stEl.className = 'health-pill-val crit'; }
+    else if (covPct === 100 && q >= 90) { stEl.textContent = '✓ Listo'; stEl.className = 'health-pill-val ok'; }
+    else { stEl.textContent = 'Revisar'; stEl.className = 'health-pill-val warn'; }
+  },
+
+  // ── Stats strip ──
+  updateStats() {
+    // Show cache-hit summary if any rows used historical data
+    const cacheHits = State.merged.filter(r => r._factSource === 'cache').length;
+    if (cacheHits > 0) {
+      const fcStats = FactCache.stats();
+      const badge   = document.getElementById('xlsBadge');
+      if (badge) badge.innerHTML += ` · <span style="color:var(--amber-dk)">⟳ ${cacheHits} fact. históricas (${fcStats.dates[0]||''})</span>`;
+    }
+
+    const total = State.merged.length;
+    const match = State.matchCount;
+    const noM   = total - match;
+    const lic   = State.licCount;
+    const desp  = State.despCount;
+    const p     = (v) => total ? Math.round(v/total*100)+'%' : '0%';
+
+    const set = (id, val, sub, cls) => {
+      document.getElementById(id).textContent = val;
+      const subEl = document.getElementById(id + 'Sub');
+      if (subEl) { subEl.textContent = sub; subEl.className = 'stat-sub ' + cls; }
+    };
+    set('stMatch',   match, p(match) + ' del total',  match===total?'ok':'warn');
+    set('stNoMatch', noM,   p(noM)   + ' del total',  noM===0?'ok':'warn');
+    set('stLic',     lic,   p(lic)   + ' del total',  lic===total?'ok':'warn');
+    set('stDesp',    desp,  p(desp)  + ' del total',  desp>0?'ok':'idle');
+
+    // Badges
+    const bdg = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=v; };
+    bdg('bdgPDF',     new Set([...State.pdfData.keys()].filter(k=>!k.includes('|D|'))).size || '—');
+    bdg('bdgXLS',     State.xlsData ? State.xlsData.length : '—');
+    bdg('bdgMatch',   match || '—');
+    bdg('bdgNoMatch', noM);
+    bdg('bdgDesp',    desp);
+
+    document.getElementById('previewDesc').textContent = `${total} rutas · ${match} con PDF · ${lic} con licencia`;
+  },
+
+  // ── Progress ──
+  showProgress(label) {
+    const bar = document.getElementById('progBar');
+    bar.classList.add('on');
+    document.getElementById('progLabel').textContent = label || 'Procesando…';
+    document.getElementById('progFill').style.width  = '0%';
+    document.getElementById('progPct').textContent   = '0%';
+  },
+  setProgress(v, total, name) {
+    const p = Math.round(v / total * 100);
+    document.getElementById('progFill').style.width = p + '%';
+    document.getElementById('progPct').textContent  = p + '%';
+    if (name) document.getElementById('progLabel').textContent = 'Procesando — ' + name;
+  },
+  hideProgress() { document.getElementById('progBar').classList.remove('on'); },
+
+  // ── Error log ──
+  showErrors(errors) {
+    const log = document.getElementById('errLog');
+    log.classList.add('on');
+    document.getElementById('errLogInner').textContent = errors.join('\n');
+  },
+  clearErrors() {
+    document.getElementById('errLog').classList.remove('on');
+    document.getElementById('errLogInner').textContent = '';
+  },
+
+  // ── DZ state ──
+  setDZDone(id, label) {
+    const dz = document.getElementById(id);
+    dz.classList.add('done');
+    dz.querySelector('.dz-text').innerHTML = `<strong>✓ ${escH(label)}</strong>`;
+  },
+  resetDZ(id, ico, main, sub) {
+    const dz = document.getElementById(id);
+    dz.classList.remove('done','drag');
+    dz.querySelector('.dz-ico').textContent  = ico;
+    dz.querySelector('.dz-text').innerHTML   = main;
+    dz.querySelector('.dz-sub').textContent  = sub;
+  },
+  setBadge(id, text, cls) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent  = text;
+    el.className    = 'dz-badge' + (cls ? ' ' + cls : '');
+  },
+
+  // ── Paste preview ──
+  renderPastePreview(preview, idx) {
+    const cols = ['RUTA'];
+    if (idx.caseta !== undefined) cols.push('SALIDA CASETA');
+    if (idx.wtms   !== undefined) cols.push('USUARIO WTMS');
+    if (idx.idIda  !== undefined) cols.push('ID IDA');
+    document.getElementById('ppHead').innerHTML = '<tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr>';
+    document.getElementById('ppBody').innerHTML = preview.map(r => '<tr>' +
+      [`<td>${escH(r.ruta)}</td>`,
+       idx.caseta!==undefined?`<td>${escH(r.caseta)}</td>`:'',
+       idx.wtms  !==undefined?`<td>${escH(r.wtms)}</td>`:'',
+       idx.idIda !==undefined?`<td>${escH(r.idIda)}</td>`:''].join('') +
+    '</tr>').join('');
+    document.getElementById('pastePreview').classList.add('on');
+  },
+  setPasteSt(msg, cls) {
+    const el = document.getElementById('pasteSt');
+    el.className   = 'paste-status' + (cls ? ' ' + cls : '');
+    el.textContent = msg;
+  },
+
+  // ── Table preview ──
+  renderTable() {
+    const thead = document.getElementById('thead');
+    const tbody = document.getElementById('tbody');
+
+    thead.innerHTML = PREVIEW_COLS.map(c => {
+      const cls = c==='RUTA' ? 'h-key' : COLS_PDF.has(c) ? 'h-pdf' : COLS_DESP.has(c) ? 'h-desp' : COLS_FILL.has(c) ? 'h-fill' : '';
+      return `<th class="${cls}">${c.trim()}</th>`;
+    }).join('');
+
+    const rows = State.merged.slice(0, 50);
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="22"><div class="empty-state"><div class="empty-ico">📂</div><div class="empty-title">Sin datos</div></div></td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = rows.map((row, rowIdx) => {
+      // Row-level indicator: cache-sourced fact data
+      const cacheIndicator = row._factSource === 'cache'
+        ? ` title="Datos de factura del ${row._factCacheDate||'día anterior'} (concentrado histórico)"`
+        : '';
+      return '<tr' + cacheIndicator + '>' + PREVIEW_COLS.map(c => {
+        let val = getMapped(row, c);
+        if (val instanceof Date) val = fmtDate(val);
+        if (!row._matched && COLS_PDF.has(c)) return '<td><span class="no-data">—</span></td>';
+        const cls = c==='RUTA' ? 'c-key' : COLS_PDF.has(c) ? 'c-pdf' : COLS_DESP.has(c) ? 'c-desp' : COLS_FILL.has(c) ? 'c-fill' : '';
+        // GLS / HORA_FACT from cache: add subtle amber tint
+        const isCacheField = row._factSource === 'cache' && (c === 'GLS DE EMB.' || c === 'HORA DE FACTURACION');
+        const extraStyle   = isCacheField ? ' style="color:var(--amber-dk);opacity:.8" title="Fuente: concentrado histórico '+escH(row._factCacheDate||'')+'"' : '';
+        return `<td><span class="${cls}"${extraStyle}>${escH(String(val))}</span></td>`;
+      }).join('') + '</tr>';
+    }).join('');
+
+    document.getElementById('legendRow').classList.add('on');
+  },
+
+  // ── SVE ──
+  resetSVE() {
+    document.getElementById('svePanel').classList.remove('on');
+    State.sveHasCritical = false;
+    State.sveHasWarnings = false;
+    State.sveLastQuality = 100;
+  },
+  renderSVE(issues, quality, nCrit, nWarn, nInfo, nPass) {
+    const panel = document.getElementById('svePanel');
+    panel.classList.add('on');
+
+    // Ring
+    const CIRC = 175.9;
+    const fill = document.getElementById('ringFill');
+    fill.style.strokeDashoffset = CIRC - (CIRC * quality / 100);
+    const ring  = document.getElementById('sveRing');
+    ring.className = 'sve-ring ' + (quality===100?'q-100':quality>=80?'q-high':quality>=50?'q-med':'q-low');
+    document.getElementById('ringPct').textContent = quality + '%';
+
+    // Counters
+    document.getElementById('sveCrit').textContent = nCrit;
+    document.getElementById('sveWarn').textContent = nWarn;
+    document.getElementById('sveInfo').textContent = nInfo;
+    document.getElementById('svePass').textContent = nPass;
+
+    // Shield
+    const shield = document.getElementById('sveShield');
+    shield.className = 'sve-shield-wrap ' + (nCrit>0?'crit':nWarn>0?'warn':'ok');
+    shield.textContent = nCrit>0 ? '🚨' : nWarn>0 ? '⚠️' : '🛡️';
+
+    // Subtitle
+    const sub = document.getElementById('sveSubtitle');
+    if (quality===100) sub.textContent = 'Auditoría completada — todos los datos superaron las validaciones.';
+    else if (nCrit>0)  sub.textContent = `${nCrit} error${nCrit>1?'es':''} crítico${nCrit>1?'s':''} detectado${nCrit>1?'s':''} — exportación bloqueada hasta corregir.`;
+    else if (nWarn>0)  sub.textContent = `${nWarn} advertencia${nWarn>1?'s':''} — revisa antes de exportar.`;
+    else               sub.textContent = 'Solo incidencias informativas — puedes exportar con seguridad.';
+
+    // Alerts
+    const container = document.getElementById('sveAlerts');
+    if (!issues.length) {
+      container.innerHTML = '<div class="sve-empty-msg">✅ Sin incidencias detectadas — los datos lucen bien.</div>';
+    } else {
+      const groups = [
+        { sev: SVE_CRIT, label:'Errores críticos',  cls:'sev-crit' },
+        { sev: SVE_WARN, label:'Advertencias',       cls:'sev-warn' },
+        { sev: SVE_INFO, label:'Informativas',        cls:'sev-info' },
+      ];
+      container.innerHTML = groups.map(g => {
+        const items = issues.filter(i => i.sev === g.sev);
+        if (!items.length) return '';
+        const gid    = 'sveGrp_' + g.sev.replace(/[^a-z]/gi,'');
+        const openCls = g.sev === SVE_CRIT ? ' open' : '';
+        return `
+          <div class="sve-group ${g.cls}${openCls}" id="${gid}">
+            <div class="sve-group-hdr" onclick="document.getElementById('${gid}').classList.toggle('open')">
+              <span class="sev-tag">${g.sev}</span>
+              <span class="sve-group-name">${g.label}</span>
+              <span class="sve-group-count">${items.length} incidencia${items.length>1?'s':''}</span>
+              <span class="sve-group-chev">▾</span>
+            </div>
+            <div class="sve-group-body">
+              ${items.map(it => `
+                <div class="sve-issue">
+                  <div class="sve-issue-ico">${SVE_ICONS[it.rule]||'🔎'}</div>
+                  <div style="flex:1">
+                    <div class="sve-issue-desc">${escH(it.desc)}</div>
+                    <div class="sve-issue-meta">
+                      ${it.ruta  ? `<span class="sve-tag-ruta">Ruta ${escH(it.ruta)}</span>` : ''}
+                      ${it.field ? `<span class="sve-tag-field">${escH(it.field)}</span>`     : ''}
+                      ${it.extra ? `<span class="sve-tag-extra">${escH(it.extra)}</span>`     : ''}
+                      ${it.ruta && it.sev !== SVE_INFO ? `<button class="btn-locate" data-locate-ruta="${escH(it.ruta)}" data-locate-field="${escH(it.field)}" data-locate-ids="${escH(JSON.stringify(it.rowIds||[]))}">🔍 Localizar y corregir</button>` : ''}
+                    </div>
+                    ${it.action ? `<div class="sve-issue-action">→ ${escH(it.action)}</div>` : ''}
+                  </div>
+                </div>`).join('')}
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    // Export gate — three states:
+    //   critical  → gate visible (red), buttons blocked
+    //   warn-only → gate visible (amber), buttons enabled, click triggers confirm modal
+    //   clean     → gate hidden, buttons enabled, direct export
+    const gate   = document.getElementById('exportGate');
+    const btnExp = document.getElementById('btnExport');
+    const btnExp2= document.getElementById('btnExport2');
+    if (State.sveHasCritical) {
+      gate.classList.remove('warn-only', 'forced');
+      gate.classList.add('on');
+      gate.innerHTML = `<div class="gate-msg">
+        <strong>⚠ Exportación bloqueada</strong>
+        <span>Existen errores críticos. Corrígelos antes de continuar, o acepta la responsabilidad.</span>
+      </div>
+      <button class="btn btn-danger-outline btn-sm" id="btnForceExport">Exportar de todas formas →</button>`;
+      // Re-attach force-export listener (innerHTML replaced the node)
+      document.getElementById('btnForceExport').addEventListener('click', () => Events.handleForceExport());
+      btnExp.disabled  = true;
+      btnExp2.disabled = true;
+    } else if (State.sveHasWarnings) {
+      gate.classList.remove('on', 'forced');
+      gate.classList.add('on', 'warn-only');
+      gate.innerHTML = `<div class="gate-msg">
+        <strong>Hay ${nWarn} advertencia${nWarn > 1 ? 's' : ''} pendiente${nWarn > 1 ? 's' : ''}</strong>
+        <span>No bloquean la exportación. Puedes exportar ahora o revisarlas primero.</span>
+      </div>`;
+      btnExp.disabled  = false;
+      btnExp2.disabled = false;
+    } else {
+      // Clean: no issues or info-only — gate hidden, export enabled immediately
+      gate.classList.remove('on', 'warn-only', 'forced');
+      btnExp.disabled  = false;
+      btnExp2.disabled = false;
+    }
+
+    UI.updateHealthRail();
+  },
+
+  // ── Catalog ──
+  renderCatalog() {
+    const tbody = document.getElementById('catTbody');
+    const cnt   = State.catalog.size;
+    document.getElementById('catBadge').textContent = cnt + ' operador' + (cnt!==1?'es':'');
+    if (!cnt) {
+      tbody.innerHTML = '<tr><td colspan="3"><div class="cat-empty">Sin operadores — agrega o importa desde Excel</div></td></tr>';
+      return;
+    }
+    tbody.innerHTML = [...State.catalog.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([op, lic]) => `
+        <tr>
+          <td class="td-op" title="${escH(op)}">${escH(op)}</td>
+          <td class="td-lic">${escH(lic)}</td>
+          <td><button class="btn-del" onclick="Events.delOp(${JSON.stringify(op)})">✕</button></td>
+        </tr>`).join('');
+  },
+  setCatStatus(msg, cls) {
+    const el = document.getElementById('catSt');
+    el.className   = 'cat-status' + (cls ? ' ' + cls : '');
+    el.textContent = msg;
+  },
+
+  // ── Buttons ──
+  // Warnings never disable export — they trigger a confirmation modal instead.
+  setActionsEnabled(on) {
+    document.getElementById('btnExport').disabled  = !on || State.sveHasCritical;
+    document.getElementById('btnExport2').disabled = !on || State.sveHasCritical;
+    document.getElementById('btnAddPDF').disabled  = !on;
+    document.getElementById('btnClear').disabled   = !on;
+  },
+
+  // ── Reset everything ──
+  resetAll() {
+    State.pdfData  = new Map();
+    State.xlsData  = null;
+    State.factData = new Map();
+    State.despData = new Map();
+    State.merged   = [];
+    State.sveHasCritical = false;
+    State.sveHasWarnings = false;
+    State.sveLastQuality = 100;
+
+    UI.resetDZ('dropPDF','☁️','<strong>Arrastra los PDFs aquí</strong> o haz clic','Todos los archivos del día a la vez');
+    UI.resetDZ('dropXLS','📊','<strong>Arrastra el Excel macro</strong> o haz clic','Lee ambas pestañas automáticamente');
+    UI.setBadge('pdfBadge', '● 0 archivos');
+    UI.setBadge('xlsBadge', '● 0 rutas');
+
+    ['stMatch','stNoMatch','stLic','stDesp'].forEach(id => {
+      document.getElementById(id).textContent = '—';
+      const sub = document.getElementById(id + 'Sub'); if (sub) { sub.textContent = '—'; sub.className = 'stat-sub idle'; }
+    });
+    ['bdgPDF','bdgXLS','bdgMatch','bdgNoMatch'].forEach(id => { const el=document.getElementById(id); if(el) el.textContent='—'; });
+    document.getElementById('bdgDesp').textContent = '0';
+
+    document.getElementById('pasteArea').value = '';
+    document.getElementById('pasteSt').textContent = '';
+    document.getElementById('pastePreview').classList.remove('on');
+
+    const tbody = document.getElementById('tbody');
+    tbody.innerHTML = '<tr><td colspan="22"><div class="empty-state"><div class="empty-ico">📂</div><div class="empty-title">Sin datos aún</div><div class="empty-desc">Carga los PDFs y el Excel macro para comenzar</div></div></td></tr>';
+    document.getElementById('thead').innerHTML = '';
+    document.getElementById('legendRow').classList.remove('on');
+    document.getElementById('previewDesc').textContent = 'Carga los PDFs y el Excel macro para comenzar';
+
+    UI.setPipeStep(1, 'active', 'En espera');
+    UI.setPipeStep(2, '', 'En espera');
+    UI.setPipeStep(3, 'optional', 'Opcional');
+    document.getElementById('pipeNum1').textContent = '1';
+    document.getElementById('pipeNum2').textContent = '2';
+
+    document.getElementById('svePanel').classList.remove('on');
+    document.getElementById('exportGate').classList.remove('on','forced');
+    UI.clearErrors();
+    UI.hideProgress();
+    UI.setActionsEnabled(false);
+    UI.updateHealthRail();
+  }
+};
+
+/* ─────────────────────────────────────────────────────────────
+   12. EVENT HANDLERS
+───────────────────────────────────────────────────────────── */
+const Events = {
+
+  // ── Drop zones ──
+  setupDrop(zoneId, inputId, handler) {
+    const zone  = document.getElementById(zoneId);
+    const input = document.getElementById(inputId);
+    zone.addEventListener('dragover',  e => { e.preventDefault(); zone.classList.add('drag'); });
+    zone.addEventListener('dragleave', ()=> zone.classList.remove('drag'));
+    zone.addEventListener('drop',      e => { e.preventDefault(); zone.classList.remove('drag'); handler([...e.dataTransfer.files]); });
+    input.addEventListener('change',   ()=> { handler([...input.files]); input.value = ''; });
+  },
+
+  // ── PDF handler ──
+  async handlePDFs(files) {
+    files = files.filter(f => f.type === 'application/pdf');
+    if (!files.length) return;
+    UI.showProgress('Procesando PDFs…');
+    const errors = [];
+    let ok = 0;
+    for (let i = 0; i < files.length; i++) {
+      try {
+        const extracted = await pdfExtract(files[i]);
+        const parsed    = parsePDF(extracted, files[i].name);
+        for (const r of parsed) {
+          State.pdfData.set(r.ruta + '|' + r.factura,    r);
+          State.pdfData.set(r.ruta + '|D|' + r.destino,  r);
+        }
+        if (parsed.length) ok++;
+        else errors.push('Sin datos: ' + files[i].name);
+      } catch (e) { errors.push('Error: ' + files[i].name + ' — ' + e.message); }
+      UI.setProgress(i + 1, files.length, files[i].name);
+    }
+    UI.hideProgress();
+
+    const uniqueCount = new Set([...State.pdfData.keys()].filter(k => !k.includes('|D|'))).size;
+    UI.setBadge('pdfBadge', `✓ ${ok} archivos · ${uniqueCount} entregas`, 'done');
+    UI.setDZDone('dropPDF', `${ok} archivos cargados`);
+    UI.setPipeStep(1, 'done', `${uniqueCount} entregas`);
+    document.getElementById('pipeNum1').textContent = '✓';
+
+    if (errors.length) UI.showErrors(errors);
+    UI.setActionsEnabled(true);
+    Events.triggerMerge();
+  },
+
+  // ── XLS handler ──
+  async handleXLS(files) {
+    const file = files.find(f => f.name.match(/\.xlsx?$/i));
+    if (!file) return;
+    UI.showProgress('Leyendo Excel…');
+    try {
+      const { rows, factData, ruteoName, factSheetLabel } = await processXLS(file);
+      State.xlsData  = rows;
+      State.factData = factData;
+      // Persist to multi-day cache
+      FactCache.persist(factData);
+
+      UI.setBadge('xlsBadge', `✓ ${rows.length} rutas · ${factSheetLabel}`, 'done');
+      UI.setDZDone('dropXLS', file.name);
+      UI.setPipeStep(2, 'done', `${rows.length} rutas`);
+      document.getElementById('pipeNum2').textContent = '✓';
+      document.getElementById('bdgXLS').textContent   = rows.length;
+
+      UI.hideProgress();
+      UI.setActionsEnabled(true);
+      Events.triggerMerge();
+    } catch (e) {
+      UI.hideProgress();
+      UI.showErrors([e.message]);
+    }
+  },
+
+  // ── Paste handler ──
+  handlePaste() {
+    const raw = document.getElementById('pasteArea').value.trim();
+    if (!raw) { UI.setPasteSt('Pega datos primero', 'err'); return; }
+    UI.setPasteSt('Procesando…', 'proc');
+    try {
+      const { data, preview, idx } = processPaste(raw);
+      State.despData = data;
+      document.getElementById('bdgDesp').textContent = data.size;
+      UI.setPasteSt(`✓ ${data.size} rutas detectadas`, 'ok');
+      UI.setPipeStep(3, 'done', `${data.size} rutas`);
+      document.getElementById('pipeNum3').textContent = '✓';
+      if (preview.length) UI.renderPastePreview(preview, idx);
+      Events.triggerMerge();
+    } catch (e) {
+      UI.setPasteSt(e.message, 'err');
+    }
+  },
+
+  clearPaste() {
+    document.getElementById('pasteArea').value    = '';
+    document.getElementById('pastePreview').classList.remove('on');
+    State.despData = new Map();
+    document.getElementById('bdgDesp').textContent = '0';
+    UI.setPasteSt('', '');
+    UI.setPipeStep(3, 'optional', 'Opcional');
+    document.getElementById('pipeNum3').textContent = '·';
+    Events.triggerMerge();
+  },
+
+  // ── Merge + SVE trigger ──
+  triggerMerge() {
+    if (!State.xlsData || State.pdfData.size === 0) return;
+    runMerge();
+    UI.renderTable();
+    UI.updateStats();
+    UI.setActionsEnabled(true);
+    setTimeout(() => {
+      runSVE(State.merged);
+      UI.updateHealthRail();
+    }, 100);
+  },
+
+  // ── Export ──
+  // Three branches match the three SVE states:
+  //   critical  → flash the gate, do nothing
+  //   warn-only → show confirmation modal (WarnModal)
+  //   clean     → export immediately
+  handleExport() {
+    if (State.sveHasCritical) {
+      document.getElementById('svePanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const gate = document.getElementById('exportGate');
+      gate.style.opacity = '.3';
+      setTimeout(() => gate.style.opacity = '1', 200);
+      return;
+    }
+    if (!State.merged.length) return;
+    if (State.sveHasWarnings) {
+      WarnModal.show();
+      return;
+    }
+    exportXLSX();
+  },
+
+  handleForceExport() {
+    const ts   = new Date().toLocaleString('es-MX');
+    const user = State.user || 'desconocido';
+    const nc   = parseInt(document.getElementById('sveCrit').textContent || '0', 10);
+    State.sveAuditLog.push({ ts, user, action:'FORCE_EXPORT', quality:State.sveLastQuality, critErrors:nc });
+    console.warn('[SVE AUDIT] Exportación forzada:', State.sveAuditLog[State.sveAuditLog.length-1]);
+
+    document.getElementById('btnExport').disabled  = false;
+    document.getElementById('btnExport2').disabled = false;
+    const gate = document.getElementById('exportGate');
+    gate.classList.add('forced');
+    gate.innerHTML = `<div class="gate-msg"><strong style="color:var(--orange)">⚠ Exportación forzada registrada</strong><span>${ts} · ${user} · Calidad: ${State.sveLastQuality}% · ${nc} error${nc>1?'es':''} crítico${nc>1?'s':''}.</span></div>`;
+    exportXLSX();
+  },
+
+  // ── Catalog ──
+  addCatalogEntry() {
+    const op  = document.getElementById('catOpInput').value.trim();
+    const lic = document.getElementById('catLicInput').value.trim();
+    if (!op || !lic) { UI.setCatStatus('Completa ambos campos', 'err'); return; }
+    State.catalog.set(normOp(op), lic);
+    document.getElementById('catOpInput').value  = '';
+    document.getElementById('catLicInput').value = '';
+    document.getElementById('catOpInput').focus();
+    UI.renderCatalog();
+    UI.setCatStatus('✓ Agregado — recuerda guardar', 'ok');
+    if (State.merged.length) Events.triggerMerge();
+  },
+
+  delOp(op) {
+    State.catalog.delete(normOp(op));
+    UI.renderCatalog();
+    UI.setCatStatus('Eliminado', 'ok');
+    if (State.merged.length) Events.triggerMerge();
+  },
+
+  async importCatalog(file) {
+    if (!file) return;
+    UI.setCatStatus('Importando…', 'ok');
+    try {
+      const buf  = await file.arrayBuffer();
+      const wb   = XLSX.read(buf, { type: 'array' });
+      const ws   = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+      const keys = Object.keys(rows[0] || {});
+      const kOp  = keys.find(k => /OPER|NOMBRE|NAME/i.test(k)) || keys[0];
+      const kLic = keys.find(k => /LIC/i.test(k)) || keys[1];
+      let added  = 0;
+      for (const r of rows) {
+        const op  = String(r[kOp] || '').trim();
+        const lic = String(r[kLic]|| '').trim();
+        if (op && lic) { State.catalog.set(normOp(op), lic); added++; }
+      }
+      UI.renderCatalog();
+      UI.setCatStatus(`✓ ${added} operadores importados`, 'ok');
+      if (State.merged.length) Events.triggerMerge();
+    } catch (e) { UI.setCatStatus('Error: ' + e.message, 'err'); }
+  }
+};
+
+/* ─────────────────────────────────────────────────────────────
+   13. EDIT SYSTEM — inline row correction from SVE alerts
+   Architecture: non-destructive patches on State.merged in-place.
+   Original source data (pdfData, xlsData) is never mutated.
+   Each save triggers runMerge() → runSVE() for immediate feedback.
+───────────────────────────────────────────────────────────── */
+const EDITABLE_FIELDS = [
+  // field key in merged row, display label, severity hint
+  { key:'OPERADOR',    label:'Operador',          crit:true  },
+  { key:'TARIMAS',     label:'Tarimas',            crit:true  },
+  { key:'_LIC',        label:'Licencia',           crit:false },
+  { key:'MARCHAMO 1',  label:'Marchamo 1',         crit:false },
+  { key:'MARCHAMO 2',  label:'Marchamo 2',         crit:false },
+  { key:'MARCHAMO 3',  label:'Marchamo 3',         crit:false },
+  { key:'MARCHAMO 4',  label:'Marchamo 4',         crit:false },
+  { key:'MARCHAMO 5',  label:'Marchamo 5',         crit:false },
+  { key:'FAC_PDF',     label:'Factura',            crit:false },
+  { key:'CITA',        label:'Cita',               crit:false },
+  { key:'_HR_DESP',    label:'HR. Despacho',       crit:false },
+  { key:'_CASETA',     label:'Salida Caseta',      crit:false },
+  { key:'_WTMS',       label:'Usuario WTMS',       crit:false },
+  { key:'_GLS',        label:'GLS de Embarque',    crit:false },
+  { key:'_HORA_FACT',  label:'Hora Facturación',   crit:false },
+];
+
+/* ─────────────────────────────────────────────────────────────
+   13. EDIT SYSTEM — inline row correction from SVE alerts
+   Architecture:
+   - Every merged row carries a stable _rowId (set in runMerge).
+   - EditSystem uses _rowId as the canonical pointer into State.merged.
+     No index-based lookup; no risk of editing the wrong row when a
+     RUTA has multiple lines.
+   - When an alert targets >1 row (e.g. dup_march affecting two routes),
+     RoutePicker shows a lightweight selector before opening the drawer.
+   - Saves mutate the live object in State.merged directly — no cloning —
+     so the export always sees the edited data.
+   - Each save triggers runSVE() for immediate feedback.
+───────────────────────────────────────────────────────────── */
+const EditSystem = {
+  _currentRowId: null,   // _rowId of the row currently open in the drawer
+  _originalValues: {},
+
+  // ── Canonical lookup: find the State.merged object by _rowId ──
+  // Returns { row, idx } or null. Never falls back to RUTA matching.
+  findByRowId(rowId) {
+    const idx = State.merged.findIndex(r => r._rowId === rowId);
+    if (idx === -1) return null;
+    return { row: State.merged[idx], idx };
+  },
+
+  // ── Entry point called by the SVE delegation handler ──
+  // rowIdsJson: JSON array string from data-locate-ids attribute
+  // When there is exactly one candidate → open drawer immediately.
+  // When there are multiple → show the route picker first.
+  locateAndEdit(ruta, focusField, rowIdsJson) {
+    let rowIds = [];
+    try { rowIds = JSON.parse(rowIdsJson || '[]'); } catch { rowIds = []; }
+
+    // Filter to IDs that actually exist in current State.merged
+    const valid = rowIds.filter(id => State.merged.some(r => r._rowId === id));
+
+    if (valid.length === 0) {
+      // Fallback: rowIds not populated (old SVE result) — use RUTA matching
+      // but warn in console so it's visible during testing
+      console.warn('[EditSystem] No rowIds provided; falling back to RUTA match for:', ruta);
+      const idx = State.merged.findIndex(r => String(r['RUTA']||'').trim() === String(ruta).trim());
+      if (idx === -1) { console.warn('[EditSystem] Row not found for ruta:', ruta); return; }
+      EditSystem._openDrawer(State.merged[idx]._rowId, focusField);
+    } else if (valid.length === 1) {
+      EditSystem._openDrawer(valid[0], focusField);
+    } else {
+      // Multiple rows → show picker
+      RoutePicker.show(valid, focusField, ruta);
+    }
+  },
+
+  // ── Open the edit drawer for a specific rowId ──
+  _openDrawer(rowId, focusField) {
+    const found = EditSystem.findByRowId(rowId);
+    if (!found) { console.warn('[EditSystem] rowId not found in State.merged:', rowId); return; }
+    const { row, idx } = found;
+
+    EditSystem._currentRowId    = rowId;
+    EditSystem._originalValues  = {};
+
+    // Scroll table row into view and highlight
+    // The preview table shows up to 50 rows; idx may be beyond what's rendered
+    const tbody    = document.getElementById('tbody');
+    const tableRows = tbody.querySelectorAll('tr');
+    tableRows.forEach(r => r.classList.remove('row-highlight'));
+    if (tableRows[idx]) {
+      tableRows[idx].classList.add('row-highlight');
+      tableRows[idx].scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    // Populate drawer header
+    const rutaVal = String(row['RUTA']||'').trim();
+    document.getElementById('editDrawerRuta').textContent = 'Ruta ' + rutaVal;
+    document.getElementById('editChangeBadge').style.display = 'none';
+
+    // Flagged fields come from the focusField string (comma-separated labels/keys)
+    const critFields = new Set(
+      focusField ? focusField.split(',').map(f => f.trim()) : []
+    );
+
+    const grid = document.getElementById('editFieldsGrid');
+    grid.innerHTML = EDITABLE_FIELDS.map(f => {
+      const val    = String(row[f.key] || '');
+      const isCrit = f.crit || critFields.has(f.label) || critFields.has(f.key);
+      EditSystem._originalValues[f.key] = val;
+      return `
+        <div class="edit-field">
+          <label class="edit-field-label${isCrit && !val ? ' crit' : ''}" for="ef_${f.key}">
+            ${f.label}${isCrit && !val ? ' ⚠' : ''}
+          </label>
+          <input
+            class="edit-field-input${isCrit && !val ? ' field-crit' : ''}"
+            id="ef_${f.key}"
+            data-field="${f.key}"
+            value="${escH(val)}"
+            placeholder="${f.label}…"
+            autocomplete="off"
+          >
+        </div>`;
+    }).join('');
+
+    grid.querySelectorAll('.edit-field-input').forEach(inp => {
+      inp.addEventListener('input', EditSystem._onFieldChange);
+    });
+
+    document.getElementById('editDrawer').classList.add('open');
+
+    const firstCrit = grid.querySelector('.field-crit');
+    if (firstCrit) firstCrit.focus();
+    else grid.querySelector('.edit-field-input')?.focus();
+  },
+
+  _onFieldChange() {
+    const inputs = document.getElementById('editFieldsGrid').querySelectorAll('.edit-field-input');
+    let changed = 0;
+    inputs.forEach(inp => {
+      if (inp.value !== (EditSystem._originalValues[inp.dataset.field] || '')) changed++;
+    });
+    const badge = document.getElementById('editChangeBadge');
+    if (changed > 0) {
+      badge.style.display = '';
+      badge.textContent   = changed + ' campo' + (changed > 1 ? 's' : '') + ' modificado' + (changed > 1 ? 's' : '');
+    } else {
+      badge.style.display = 'none';
+    }
+  },
+
+  saveAndRevalidate() {
+    if (!EditSystem._currentRowId) return;
+
+    // Re-lookup the live object by _rowId — guarantees we mutate the right instance
+    const found = EditSystem.findByRowId(EditSystem._currentRowId);
+    if (!found) { console.warn('[EditSystem] Row disappeared before save:', EditSystem._currentRowId); return; }
+    const { row } = found;
+
+    const inputs = document.getElementById('editFieldsGrid').querySelectorAll('.edit-field-input');
+    const ts     = new Date().toLocaleString('es-MX');
+
+    inputs.forEach(inp => {
+      const field  = inp.dataset.field;
+      const newVal = inp.value.trim();
+      const oldVal = EditSystem._originalValues[field] || '';
+      if (newVal !== oldVal) {
+        row[field] = newVal;
+        if (field === '_LIC') row['LIC.'] = newVal;   // keep LIC. alias in sync
+        State.edits.push({
+          rowId: EditSystem._currentRowId,
+          ruta:  String(row['RUTA']||''),
+          field, oldVal, newVal, ts,
+          user:  State.user
+        });
+      }
+    });
+
+    EditSystem.close();
+    UI.renderTable();
+    UI.updateStats();
+    setTimeout(() => {
+      runSVE(State.merged);
+      UI.updateHealthRail();
+    }, 80);
+  },
+
+  close() {
+    document.getElementById('editDrawer').classList.remove('open');
+    setTimeout(() => {
+      document.querySelectorAll('.row-highlight').forEach(r => r.classList.remove('row-highlight'));
+    }, 800);
+    EditSystem._currentRowId = null;
+  }
+};
+
+/* ─────────────────────────────────────────────────────────────
+   WARN CONFIRM MODAL
+   Shown when the user clicks export and the SVE has warnings but
+   no critical errors. Lets the user review or proceed immediately.
+───────────────────────────────────────────────────────────── */
+const WarnModal = {
+  show() {
+    const nWarn = parseInt(document.getElementById('sveWarn').textContent || '0', 10);
+    document.getElementById('wmTitle').textContent =
+      `${nWarn} advertencia${nWarn > 1 ? 's' : ''} pendiente${nWarn > 1 ? 's' : ''}`;
+    document.getElementById('wmBody').innerHTML =
+      `Las advertencias detectadas por el SVE <strong>no bloquean la exportación</strong>, ` +
+      `pero podrían indicar datos incompletos o inconsistentes que deberían revisarse.<br><br>` +
+      `Puedes revisar las advertencias ahora o exportar directamente. ` +
+      `En cualquier caso, el archivo reflejará el estado actual de los datos.`;
+    document.getElementById('warnModalOverlay').classList.remove('hidden');
+  },
+
+  close() {
+    document.getElementById('warnModalOverlay').classList.add('hidden');
+  },
+
+  review() {
+    WarnModal.close();
+    // Scroll to SVE panel and expand the warnings group
+    const svePanel = document.getElementById('svePanel');
+    svePanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const warnGroup = document.getElementById('sveGrp_ADVERTENCIA');
+    if (warnGroup && !warnGroup.classList.contains('open')) {
+      warnGroup.classList.add('open');
+    }
+  },
+
+  exportAnyway() {
+    WarnModal.close();
+    const ts   = new Date().toLocaleString('es-MX');
+    const user = State.user || 'desconocido';
+    const nWarn = parseInt(document.getElementById('sveWarn').textContent || '0', 10);
+    State.sveAuditLog.push({ ts, user, action: 'EXPORT_WITH_WARNINGS', quality: State.sveLastQuality, warnings: nWarn });
+    console.info('[SVE AUDIT] Exportación con advertencias:', State.sveAuditLog[State.sveAuditLog.length - 1]);
+    exportXLSX();
+  }
+};
+
+/* ─────────────────────────────────────────────────────────────
+   ROUTE PICKER — lightweight selector shown when an SVE alert
+   targets multiple rows (e.g. duplicate marchamo on two routes).
+   Presents the candidate rows and resolves to a single _rowId
+   before opening the edit drawer.
+───────────────────────────────────────────────────────────── */
+const RoutePicker = {
+  _focusField: '',
+
+  show(rowIds, focusField, contextLabel) {
+    RoutePicker._focusField = focusField || '';
+
+    const marchamo = contextLabel || '';
+    document.getElementById('rpTitle').textContent =
+      'Selecciona la ruta a corregir';
+    document.getElementById('rpSub').textContent =
+      marchamo
+        ? `El marchamo ${marchamo} aparece en múltiples rutas. ¿Cuál deseas editar?`
+        : 'Esta incidencia afecta a múltiples rutas. ¿Cuál deseas editar?';
+
+    const optionsEl = document.getElementById('rpOptions');
+    optionsEl.innerHTML = rowIds.map(id => {
+      const found = EditSystem.findByRowId(id);
+      if (!found) return '';
+      const { row } = found;
+      const ruta  = String(row['RUTA']||'').trim();
+      const op    = String(row['OPERADOR']||'').trim() || '—';
+      const dest  = String(row['DEST_PDF']||row['ENT1']||'').trim();
+      return `
+        <button class="route-picker-opt" data-rowid="${escH(id)}">
+          <div>
+            <div class="route-picker-opt-ruta">Ruta ${escH(ruta)}</div>
+            <div class="route-picker-opt-sub">${escH(op)}${dest ? ' · ' + escH(dest) : ''}</div>
+          </div>
+        </button>`;
+    }).join('');
+
+    document.getElementById('routePickerOverlay').classList.remove('hidden');
+  },
+
+  _pick(rowId) {
+    RoutePicker.close();
+    EditSystem._openDrawer(rowId, RoutePicker._focusField);
+  },
+
+  close() {
+    document.getElementById('routePickerOverlay').classList.add('hidden');
+    document.getElementById('rpOptions').innerHTML = '';
+  }
+};
+
+/* ─────────────────────────────────────────────────────────────
+   14. FACT CACHE — persistent multi-day concentrado
+   Strategy:
+   - On each XLS load, merge new factData into localStorage cache
+   - Cache key: invoice#, value: { gls, horaFact, date, source }
+   - On merge: if invoice not in current factData, fallback to cache
+   - TTL: 7 days — entries older than 7 days are pruned on load
+   - Visual marker: _factSource = 'cache' on affected merged rows
+   - Storage estimate: ~200 bytes/invoice × 500 invoices = ~100KB/day
+     × 7 days = ~700KB — well within localStorage 5MB limit
+   - Risk mitigation: cached data is clearly marked; user can see source
+───────────────────────────────────────────────────────────── */
+const FactCache = {
+  STORAGE_KEY: 'sd_fact_cache',
+  TTL_DAYS:    7,
+
+  // Load cache from localStorage, prune expired entries
+  load() {
+    try {
+      const raw  = localStorage.getItem(FactCache.STORAGE_KEY);
+      if (!raw) return new Map();
+      const obj  = JSON.parse(raw);
+      const now  = Date.now();
+      const ttl  = FactCache.TTL_DAYS * 86400 * 1000;
+      const map  = new Map();
+      for (const [inv, entry] of Object.entries(obj)) {
+        if (now - (entry.savedAt || 0) < ttl) map.set(inv, entry);
+      }
+      return map;
+    } catch { return new Map(); }
+  },
+
+  // Merge new factData into persistent cache and save
+  persist(newFactData) {
+    try {
+      const cache   = FactCache.load();
+      const today   = new Date().toISOString().slice(0, 10);
+      const savedAt = Date.now();
+      newFactData.forEach((val, inv) => {
+        cache.set(inv, { ...val, date: today, savedAt, source: 'current' });
+      });
+      const obj = {};
+      cache.forEach((v, k) => { obj[k] = v; });
+      localStorage.setItem(FactCache.STORAGE_KEY, JSON.stringify(obj));
+      State.factCache = cache;
+      console.log('[FactCache] Persisted', newFactData.size, 'entries. Total cache:', cache.size);
+    } catch (e) {
+      console.warn('[FactCache] Could not persist:', e.message);
+    }
+  },
+
+  // Look up invoice in cache (fallback after current factData miss)
+  lookup(inv) {
+    return State.factCache.get(inv) || null;
+  },
+
+  // Clear entire cache
+  clear() {
+    localStorage.removeItem(FactCache.STORAGE_KEY);
+    State.factCache = new Map();
+  },
+
+  // Stats for display
+  stats() {
+    const cache = State.factCache;
+    const days  = new Set([...cache.values()].map(v => v.date));
+    return { total: cache.size, days: days.size, dates: [...days].sort().reverse() };
+  }
+};
+
+/* ─────────────────────────────────────────────────────────────
+   15. INITIALIZATION
+───────────────────────────────────────────────────────────── */
+function init() {
+  // ── Theme & User ──
+  UI.applyTheme(State.theme);
+  UI.setUser(State.user);
+
+  // ── Load FactCache from localStorage ──
+  State.factCache = FactCache.load();
+  const fcStats = FactCache.stats();
+  if (fcStats.total > 0) {
+    console.log('[FactCache] Loaded', fcStats.total, 'invoices from', fcStats.days, 'day(s):', fcStats.dates.join(', '));
+  }
+
+  // ── Drop zones ──
+  Events.setupDrop('dropPDF', 'filePDF', Events.handlePDFs);
+  Events.setupDrop('dropXLS', 'fileXLS', Events.handleXLS);
+
+  // ── Buttons ──
+  document.getElementById('btnParse').addEventListener('click',     () => Events.handlePaste());
+  document.getElementById('btnPasteClear').addEventListener('click', () => Events.clearPaste());
+  document.getElementById('btnExport').addEventListener('click',    () => Events.handleExport());
+  document.getElementById('btnExport2').addEventListener('click',   () => Events.handleExport());
+  // btnForceExport listener is attached dynamically in UI.renderSVE when the gate is rendered
+  // (the node is rebuilt via innerHTML each render, so a static init() listener would go stale)
+  document.getElementById('btnAddPDF').addEventListener('click',    () => document.getElementById('filePDF').click());
+  document.getElementById('btnClear').addEventListener('click',     () => UI.resetAll());
+
+  // ── Theme toggle button ──
+  document.getElementById('btnTheme').addEventListener('click', () =>
+    UI.applyTheme(State.theme === 'dark' ? 'light' : 'dark'));
+
+  // ── Modal — theme options use data-theme delegation (no inline onclick) ──
+  document.querySelectorAll('.theme-opt[data-theme]').forEach(el => {
+    el.addEventListener('click', () => UI.applyTheme(el.dataset.theme));
+  });
+
+  // ── User chip → opens modal in settings mode ──
+  document.getElementById('tbUser').addEventListener('click', () => UI.openModal('settings'));
+
+  // ── Modal save button ──
+  document.getElementById('nameModalBtn').addEventListener('click', () => {
+    const name = document.getElementById('nameInput').value.trim() || State.user;
+    UI.closeModal(name);
+  });
+
+  // ── Enter key in name input ──
+  document.getElementById('nameInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('nameModalBtn').click();
+  });
+
+  // ── Catalog ──
+  document.getElementById('catToggle').addEventListener('click',    () => document.getElementById('catPanel').classList.toggle('open'));
+  document.getElementById('btnCatAdd').addEventListener('click',    () => Events.addCatalogEntry());
+  document.getElementById('catLicInput').addEventListener('keydown', e => { if (e.key === 'Enter') Events.addCatalogEntry(); });
+  document.getElementById('btnCatSave').addEventListener('click',   () => saveCatalog());
+  document.getElementById('catImportFile').addEventListener('change', function() {
+    Events.importCatalog(this.files[0]); this.value = '';
+  });
+
+  // ── SVE "Localizar y corregir" — event delegation (EditSystem lives inside IIFE) ──
+  // btn-locate buttons are generated dynamically on each SVE render;
+  // delegating to the stable sveAlerts container avoids stale-reference issues.
+  document.getElementById('sveAlerts').addEventListener('click', e => {
+    const btn = e.target.closest('.btn-locate');
+    if (!btn) return;
+    EditSystem.locateAndEdit(
+      btn.dataset.locateRuta,
+      btn.dataset.locateField,
+      btn.dataset.locateIds || '[]'
+    );
+  });
+
+  // ── Warn Confirm Modal ──
+  document.getElementById('wmReview').addEventListener('click', () => WarnModal.review());
+  document.getElementById('wmExport').addEventListener('click', () => WarnModal.exportAnyway());
+  document.getElementById('warnModalOverlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('warnModalOverlay')) WarnModal.close();
+  });
+
+  // ── Route Picker ──
+  document.getElementById('rpOptions').addEventListener('click', e => {
+    const opt = e.target.closest('.route-picker-opt');
+    if (!opt) return;
+    RoutePicker._pick(opt.dataset.rowid);
+  });
+  document.getElementById('rpCancel').addEventListener('click', () => RoutePicker.close());
+  // Close picker on overlay background click
+  document.getElementById('routePickerOverlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('routePickerOverlay')) RoutePicker.close();
+  });
+
+  // ── Edit drawer ──
+  document.getElementById('btnEditSave').addEventListener('click',   () => EditSystem.saveAndRevalidate());
+  document.getElementById('btnEditCancel').addEventListener('click', () => EditSystem.close());
+  // Close drawer on Escape
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { EditSystem.close(); WarnModal.close(); RoutePicker.close(); }
+  });
+
+  // ── Init catalog ──
+  initCatalog();
+
+  // ── Init pipeline ──
+  UI.setPipeStep(1, 'active', 'En espera');
+  UI.setActionsEnabled(false);
+  UI.updateHealthRail();
+
+  // ── First-run modal: only show if never configured ──
+  // After first save, 'sd_configured' is set → modal never auto-opens again
+  setTimeout(() => {
+    const configured = localStorage.getItem('sd_configured');
+    if (!configured) {
+      UI.openModal('setup');
+    }
+  }, 350);
+}
+
+// Boot
+init();
+
+})(); // end SmartDispatch IIFE
+</script>
+</body>
+</html>
