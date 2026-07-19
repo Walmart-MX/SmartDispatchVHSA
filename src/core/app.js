@@ -68,6 +68,7 @@ import { RoutePicker } from '../editing/route-picker.js';
 import { FactCache } from '../features/fact-cache.js';
 import { initCatalog } from '../features/catalog.js';
 import { DispatchHistory } from '../features/dispatch-history.js';
+import { CatalogStore } from '../features/catalogs/catalog-store.js';
 
 /**
  * Inicializa la aplicación completa.
@@ -156,6 +157,15 @@ export async function init() {
     const tab = tabBtn.dataset.tab;
     document.querySelectorAll('.ref-tab').forEach(b => b.classList.toggle('active', b === tabBtn));
     document.querySelectorAll('.ref-tab-panel').forEach(p => p.classList.toggle('active', p.dataset.tabPanel === tab));
+  });
+  // ── Catálogos Maestros (Camino C, Fase 3) ──
+  document.getElementById('masterCatToggle').addEventListener('click', () =>
+    document.getElementById('masterCatPanel').classList.toggle('open'));
+  document.getElementById('mcVentanaFile').addEventListener('change', function() {
+    Events.importMasterCatalog('ventanaRecibo', this.files[0]); this.value = '';
+  });
+  document.getElementById('mcPoolFile').addEventListener('change', function() {
+    Events.importMasterCatalog('poolReal', this.files[0]); this.value = '';
   });
 
   // ── Catalog ──
@@ -251,10 +261,24 @@ export async function init() {
   UI.applyMode();
 
   // ── Init catalog — Supabase (Camino B, Fase 1) ──
-  UI.setCatStatus('Cargando catálogo…', 'ok');
-  const catResult = await initCatalog();
-  UI.renderCatalog();
-  UI.setCatStatus(catResult.msg, catResult.ok ? 'ok' : 'err');
+UI.setCatStatus('Cargando catálogo…', 'ok');
+
+const catResult = await initCatalog();
+
+UI.renderCatalog();
+UI.setCatStatus(catResult.msg, catResult.ok ? 'ok' : 'err');
+
+// ───────────────────────────────────────────────────────────────
+// Init catálogos maestros (Camino C, Fase 1-2)
+// Se cargan silenciosamente. Todavía no existe UI para ellos
+// (llegará en Fase 3). El motor de enriquecimiento los utilizará
+// automáticamente cuando tengan información y hará no-op cuando
+// estén vacíos.
+// ───────────────────────────────────────────────────────────────
+// ── Init catálogos maestros (Camino C) ──
+  await CatalogStore.loadAll();
+  UI.renderCatalogMasterStatus('ventanaRecibo');
+  UI.renderCatalogMasterStatus('poolReal');
 
   // ── Aviso de día ya procesado (Camino B, Fase 3) ──
   const todaySession = await DispatchHistory.getTodaySession();
