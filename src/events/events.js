@@ -2,53 +2,67 @@
  * events/events.js
  * EVENTS — coordinador central de todos los manejadores de eventos.
  *
- * Este objeto actúa como la capa de orquestación: recibe eventos del DOM
- * (clicks, drops, cambios de input) y coordina las llamadas a los módulos
- * de procesamiento, estado y UI. No contiene lógica de negocio propia.
+ * CAMBIO (integración Reporte WTMS — 4ª fuente obligatoria, jul-2026):
+ *   Ninguna de las 4 fuentes es opcional. checkSources() y triggerMerge()
+ *   bloquean el merge completo si falta cualquiera.
  *
- * CAMBIO Camino B / Fase 1: las funciones de catálogo (addCatalogEntry,
- * delOp, importCatalog) pasaron de síncronas a async — ahora persisten
- * en Supabase antes de refrescar la UI, en vez de mutar únicamente el
- * Map en memoria. El contrato con quien las invoca no cambió: siguen
- * llamándose igual, solo que ahora devuelven una Promise (el caller no
- * necesita await si no le importa esperar el resultado, ver renderCatalog
- * en ui.js, que las invoca en un onclick inline sin await).
+ * CAMBIO (rediseño Mesa de Trabajo/Preparación — mockup jul-2026):
+ *   La pantalla de Preparación reemplaza la barra de pipeline (3/4 pasos
+ *   con pipeStep1..4) y los badges sueltos (pdfBadge/xlsBadge/bdgDesp)
+ *   por 4 tarjetas de fuente ("up-card"). Los handlers de cada fuente ya
+ *   no llaman UI.setBadge()/UI.setDZDone()/UI.setPipeStep() (retirados
+ *   de ui.js, sus IDs de destino no existen en el nuevo HTML) — ahora
+ *   llaman UI.setSourceStatus(key, done, statusText, subText), un único
+ *   método que actualiza la tarjeta completa. triggerMerge() reemplaza
+ *   UI.renderSourceGate(missing) (nunca definido en ui.js — gap
+ *   detectado durante el rediseño) por UI.updatePrepView(missing), que
+ *   además colapsa/expande la grilla de Preparación según
+ *   Events.checkSources().ok.
  *
- * CAMBIO Camino B / Fase 3: toda exportación pasa ahora por
- * finalizeAndExport() — un único punto de entrada que persiste la sesión
- * en el historial permanente (dispatch_sessions/dispatch_rows en
- * Supabase) y siempre dispara la descarga local, incluso si el guardado
- * remoto falla. handleExport(), handleForceExport() y
- * WarnModal.exportAnyway() convergen ahí. También se agregan los
- * manejadores del panel "Historial de Procesamientos" y del aviso de
- * "día ya procesado" (openHistory, selectHistorySession,
- * redownloadHistorySession, previewTodaySession, redownloadToday).
+ * CAMBIO (jul-2026 — feedback visual de carga/procesamiento):
+ *   handlePDFs/handleXLS/handleWTMS ahora alternan UI.setSourceProcessing
+ *   (key, true/false) alrededor de la lectura async del archivo, siempre
+ *   dentro de un try/finally — así la animación de "respiración" de la
+ *   tarjeta (ver index.html, .up-card.processing) se apaga sin importar
+ *   si la lectura terminó en éxito o en error. La animación de arrastre
+ *   (.up-card.drag) no requiere cambios aquí: Events.setupDrop ya
+ *   alternaba esa clase, lo único que faltaba era el CSS (ver index.html).
  *
- * CAMBIO — Fase 5 del rediseño "Centro de Operaciones"
- * (ModeSurface / operationalMode): triggerMerge() y
- * refreshTodayBanner() ahora también llaman a UI.applyMode() después
- * de actualizar el estado — son los dos puntos de este archivo donde
- * cambia algo que State.operationalMode necesita para recalcularse
- * (merged/SVE en triggerMerge, todaySession en refreshTodayBanner).
- * refreshTodayBanner() además guarda la sesión en State.todaySession,
- * que antes solo se pasaba directo a UI.renderTodayBanner() sin
- * persistirse en el estado global.
+ * CAMBIO (jul-2026 — administración de catálogos maestros fila por fila):
+ *   Se agregan addCatalogRow()/deleteCatalogRow() — contraparte de
+ *   addCatalogEntry()/delOp() (catálogo de operadores) pero para
+ *   Ventana de Recibo/Pool Real vía CatalogStore.addRow()/deleteRow().
+ *   importMasterCatalog() ahora también refresca UI.renderCatalogAdmin()
+ *   tras un reemplazo completo, para que la tabla fila-por-fila quede
+ *   sincronizada con el Excel recién importado.
  *
- * Dependencias:
- *   - State (core/state.js)
- *   - normOp (utils/format.js)
- *   - UI (ui/ui.js)
- *   - EditSystem, WarnModal, RoutePicker (editing/)
- *   - FactCache (features/fact-cache.js)
- *   - DispatchHistory (features/dispatch-history.js)
- *   - pdfExtract, parsePDF (processors/pdf.js)
- *   - processXLS (processors/excel.js)
- *   - processPaste (processors/paste.js)
- *   - runMerge (processors/merge.js)
- *   - runSVE (features/validation/sve.js)
- *   - exportXLSX (features/export.js)
- *   - addOperator, deleteOperator, importOperators (features/catalog.js)
- *   - XLSX (global del CDN — usado en importCatalog)
+ * CAMBIO (Centro de Mantenimiento — Fase 2, jul-2026):
+ *   Se agregan loadMaintenanceCenter()/resolveIncident()/
+ *   toggleResolvedIncidents() — orquestación del panel nuevo de
+ *   Administración → Centro de Mantenimiento. Events es responsable de
+ *   ir a buscar los datos a IncidentStore y pasarlos a UI para pintar;
+ *   UI no importa Supabase directamente (mismo contrato que el resto
+ *   de la app — ver ui.js, cabecera). El sync propiamente dicho
+ *   (agrupar/persistir incidencias) ocurre en processors/merge.js tras
+ *   cada corrida, no aquí — este módulo solo LEE y resuelve.
+ *
+ * FIX DE INTEGRIDAD DE DATOS (jul-2026) — handlePDFs():
+ *   Antes se indexaba SIEMPRE `ruta + '|' + r.factura` y
+ *   `ruta + '|D|' + r.destino` en State.pdfData, aunque factura/destino
+ *   llegaran vacíos (entrega con bloque de PDF parcialmente ilegible).
+ *   Si dos entregas de la misma ruta tenían ese campo vacío, ambas
+ *   compartían la misma clave del Map y la última sobreescribía a la
+ *   primera — un match "específico" podía terminar apuntando al bloque
+ *   equivocado sin que nada lo detectara. Ahora solo se indexa una
+ *   clave cuando el valor correspondiente NO está vacío — así una
+ *   entrega sin factura/destino detectado simplemente no es alcanzable
+ *   por búsqueda específica (lo cual es correcto: no hay certeza), en
+ *   vez de colisionar con otra. Complementa el fix de
+ *   processors/merge.js (fallback por ruta ya no adivina cuando hay
+ *   más de un candidato) y el de processors/pdf.js (extracción
+ *   tolerante por campo — un marchamo inválido ya no vacía
+ *   factura/destino, así que esta colisión de claves vacías será cada
+ *   vez menos frecuente, pero se corrige de raíz de todas formas).
  */
 import { State } from '../core/state.js';
 import { normOp } from '../utils/format.js';
@@ -60,16 +74,17 @@ import { FactCache } from '../features/fact-cache.js';
 import { pdfExtract, parsePDF } from '../processors/pdf.js';
 import { processXLS } from '../processors/excel.js';
 import { processPaste } from '../processors/paste.js';
+import { processWTMS } from '../processors/wtms.js';
 import { runMerge } from '../processors/merge.js';
 import { runSVE } from '../features/validation/sve.js';
 import { exportXLSX } from '../features/export.js';
 import { addOperator, deleteOperator, importOperators } from '../features/catalog.js';
 import { DispatchHistory } from '../features/dispatch-history.js';
 import { CatalogStore } from '../features/catalogs/catalog-store.js';
+import { IncidentStore } from '../features/incidents/incident-store.js';
 
 export const Events = {
 
-  // ── Drop zones ──
   setupDrop(zoneId, inputId, handler) {
     const zone  = document.getElementById(zoneId);
     const input = document.getElementById(inputId);
@@ -78,7 +93,7 @@ export const Events = {
     zone.addEventListener('drop',      e => { e.preventDefault(); zone.classList.remove('drag'); handler([...e.dataTransfer.files]); });
     input.addEventListener('change',   ()=> { handler([...input.files]); input.value = ''; });
   },
-// ── Catálogos Maestros (Camino C, Fase 3) ──
+
   async importMasterCatalog(catalogId, file) {
     if (!file) return;
     UI.setMasterCatStatus('Importando…', 'ok');
@@ -90,61 +105,100 @@ export const Events = {
 
       const result = await CatalogStore.replaceCatalog(catalogId, rows, State.user);
       UI.renderCatalogMasterStatus(catalogId);
+      UI.renderCatalogAdmin(catalogId);
       UI.setMasterCatStatus(`✓ ${result.count} registros cargados`, 'ok');
       if (State.merged.length) Events.triggerMerge();
     } catch (e) {
       UI.setMasterCatStatus('Error: ' + e.message, 'err');
     }
   },
-  // ── PDF handler ──
+
+  /**
+   * Agrega UN registro individual a un catálogo maestro desde el panel
+   * de Administración — contraparte de addCatalogEntry() (operadores),
+   * pero genérica sobre CATALOGS (ver ui.js → renderCatalogAdmin()).
+   * @param {string} catalogId — 'ventanaRecibo' | 'poolReal'
+   * @param {object} values — { columnaCanonica: valor } capturado del formulario
+   */
+  async addCatalogRow(catalogId, values) {
+    UI.setCatalogAdminStatus(catalogId, 'Guardando…', 'ok');
+    try {
+      await CatalogStore.addRow(catalogId, values, State.user);
+      UI.renderCatalogAdmin(catalogId);
+      UI.renderCatalogMasterStatus(catalogId);
+      UI.setCatalogAdminStatus(catalogId, '✓ Registro agregado', 'ok');
+      if (State.merged.length) Events.triggerMerge();
+    } catch (e) {
+      UI.setCatalogAdminStatus(catalogId, e.message, 'err');
+    }
+  },
+
+  /**
+   * Elimina UN registro individual de un catálogo maestro por su _id.
+   * @param {string} catalogId — 'ventanaRecibo' | 'poolReal'
+   * @param {string} id — _id del registro (uuid de Supabase)
+   */
+  async deleteCatalogRow(catalogId, id) {
+    UI.setCatalogAdminStatus(catalogId, 'Eliminando…', 'ok');
+    try {
+      await CatalogStore.deleteRow(catalogId, id, State.user);
+      UI.renderCatalogAdmin(catalogId);
+      UI.renderCatalogMasterStatus(catalogId);
+      UI.setCatalogAdminStatus(catalogId, 'Eliminado', 'ok');
+      if (State.merged.length) Events.triggerMerge();
+    } catch (e) {
+      UI.setCatalogAdminStatus(catalogId, e.message, 'err');
+    }
+  },
+
   async handlePDFs(files) {
     files = files.filter(f => f.type === 'application/pdf');
     if (!files.length) return;
     UI.showProgress('Procesando PDFs…');
+    UI.setSourceProcessing('pdf', true);
     const errors = [];
     let ok = 0;
-    for (let i = 0; i < files.length; i++) {
-      try {
-        const extracted = await pdfExtract(files[i]);
-        const parsed    = parsePDF(extracted, files[i].name);
-        for (const r of parsed) {
-          State.pdfData.set(r.ruta + '|' + r.factura,   r);
-          State.pdfData.set(r.ruta + '|D|' + r.destino, r);
-        }
-        if (parsed.length) ok++;
-        else errors.push('Sin datos: ' + files[i].name);
-      } catch (e) { errors.push('Error: ' + files[i].name + ' — ' + e.message); }
-      UI.setProgress(i + 1, files.length, files[i].name);
+    try {
+      for (let i = 0; i < files.length; i++) {
+        try {
+          const extracted = await pdfExtract(files[i]);
+          const parsed    = parsePDF(extracted, files[i].name);
+          for (const r of parsed) {
+            // FIX (jul-2026) — ver nota de cabecera "FIX DE INTEGRIDAD DE
+            // DATOS": nunca indexar una clave con factura/destino vacío.
+            // Una entrega sin ese dato detectado queda fuera del match
+            // específico (correcto: no hay certeza) en vez de arriesgarse
+            // a colisionar con otra entrega de la misma ruta.
+            if (r.factura) State.pdfData.set(r.ruta + '|' + r.factura,   r);
+            if (r.destino) State.pdfData.set(r.ruta + '|D|' + r.destino, r);
+          }
+          if (parsed.length) ok++;
+          else errors.push('Sin datos: ' + files[i].name);
+        } catch (e) { errors.push('Error: ' + files[i].name + ' — ' + e.message); }
+        UI.setProgress(i + 1, files.length, files[i].name);
+      }
+    } finally {
+      UI.setSourceProcessing('pdf', false);
     }
     UI.hideProgress();
 
     const uniqueCount = new Set([...State.pdfData.keys()].filter(k => !k.includes('|D|'))).size;
-    UI.setBadge('pdfBadge', `✓ ${ok} archivos · ${uniqueCount} entregas`, 'done');
-    UI.setDZDone('dropPDF', `${ok} archivos cargados`);
-    UI.setPipeStep(1, 'done', `${uniqueCount} entregas`);
-    document.getElementById('pipeNum1').textContent = '✓';
+    UI.setSourceStatus('pdf', true, '✓ Completo', `${ok} archivos · ${uniqueCount} entregas`);
 
     if (errors.length) UI.showErrors(errors);
-    UI.setActionsEnabled(true);
     Events.triggerMerge();
   },
 
-  // ── XLS handler ──
   async handleXLS(files) {
     const file = files.find(f => f.name.match(/\.xlsx?$/i));
     if (!file) return;
     UI.showProgress('Leyendo Excel…');
+    UI.setSourceProcessing('xls', true);
     try {
       const { rows, factData, ruteoName, factSheetLabel } = await processXLS(file);
       State.xlsData  = rows;
       State.factData = factData;
 
-      // FactCache.persist() ahora escribe en Supabase (Camino B Fase 2) —
-      // es una llamada de red real. No la esperamos antes de correr el
-      // merge: runMerge() usa State.factData como fuente primaria, el
-      // caché remoto solo es fallback de OTROS días (ya cargado en
-      // memoria desde el arranque). El estado del panel de diagnóstico
-      // se refresca cuando la escritura termina, sin bloquear la UI.
       State.cacheUpdating = true;
       UI.renderCacheHistory();
       FactCache.persist(factData).finally(() => {
@@ -152,22 +206,41 @@ export const Events = {
         UI.renderCacheHistory();
       });
 
-      UI.setBadge('xlsBadge', `✓ ${rows.length} rutas · ${factSheetLabel}`, 'done');
-      UI.setDZDone('dropXLS', file.name);
-      UI.setPipeStep(2, 'done', `${rows.length} rutas`);
-      document.getElementById('pipeNum2').textContent = '✓';
-      document.getElementById('bdgXLS').textContent   = rows.length;
+      UI.setSourceStatus('xls', true, '✓ Completo', `${rows.length} rutas · ${factSheetLabel}`);
 
       UI.hideProgress();
-      UI.setActionsEnabled(true);
       Events.triggerMerge();
     } catch (e) {
       UI.hideProgress();
       UI.showErrors([e.message]);
+    } finally {
+      UI.setSourceProcessing('xls', false);
     }
   },
 
-  // ── Paste handler ──
+  // ── Reporte WTMS handler (4ª fuente obligatoria) ──
+  async handleWTMS(files) {
+    const file = files.find(f => f.name.match(/\.csv$/i));
+    if (!file) { if (files.length) UI.showErrors(['El Reporte WTMS debe ser un archivo .csv']); return; }
+    UI.showProgress('Leyendo Reporte WTMS…');
+    UI.setSourceProcessing('wtms', true);
+    try {
+      const raw = await file.text();
+      const { data } = processWTMS(raw);
+      State.wtmsData = data;
+
+      UI.setSourceStatus('wtms', true, '✓ Completo', `${data.size} cargas`);
+
+      UI.hideProgress();
+      Events.triggerMerge();
+    } catch (e) {
+      UI.hideProgress();
+      UI.showErrors([e.message]);
+    } finally {
+      UI.setSourceProcessing('wtms', false);
+    }
+  },
+
   handlePaste() {
     const raw = document.getElementById('pasteArea').value.trim();
     if (!raw) { UI.setPasteSt('Pega datos primero', 'err'); return; }
@@ -175,10 +248,8 @@ export const Events = {
     try {
       const { data, preview, idx } = processPaste(raw);
       State.despData = data;
-      document.getElementById('bdgDesp').textContent = data.size;
       UI.setPasteSt(`✓ ${data.size} rutas detectadas`, 'ok');
-      UI.setPipeStep(3, 'done', `${data.size} rutas`);
-      document.getElementById('pipeNum3').textContent = '✓';
+      UI.setSourceStatus('desp', true, '✓ Completo', `${data.size} rutas detectadas`);
       if (preview.length) UI.renderPastePreview(preview, idx);
       Events.triggerMerge();
     } catch (e) {
@@ -190,38 +261,77 @@ export const Events = {
     document.getElementById('pasteArea').value = '';
     document.getElementById('pastePreview').classList.remove('on');
     State.despData = new Map();
-    document.getElementById('bdgDesp').textContent = '0';
     UI.setPasteSt('', '');
-    UI.setPipeStep(3, 'optional', 'Opcional');
-    document.getElementById('pipeNum3').textContent = '·';
+    UI.setSourceStatus('desp', false, 'Pega desde Excel', 'Copia RUTA · CASETA · WTMS · ID\'S MASTER');
     Events.triggerMerge();
   },
 
-  // ── Merge + SVE trigger ──
+  // ── Validación de fuentes obligatorias ──
+  checkSources() {
+    const missing = [];
+    if (State.pdfData.size === 0) missing.push('PDFs de cargas');
+    if (!State.xlsData || !State.xlsData.length) missing.push('Excel macro (RUTEO NUEVO)');
+    if (State.despData.size === 0) missing.push("Status de despacho (RUTA + ID'S MASTER)");
+    if (State.wtmsData.size === 0) missing.push('Reporte WTMS');
+    return { ok: missing.length === 0, missing };
+  },
+
   triggerMerge() {
-    if (!State.xlsData || State.pdfData.size === 0) return;
+    const { ok, missing } = Events.checkSources();
+    UI.updatePrepView(missing);
+
+    if (!ok) {
+      State.merged = [];
+      State.sveIssues = [];
+      UI.renderTable();
+      UI.renderFixList();
+      UI.renderQualityScreen();
+      UI.renderExportScreen();
+      UI.updateStats();
+      UI.resetSVE();
+      UI.setActionsEnabled(false);
+      UI.updateHealthRail();
+      UI.applyMode();
+      return;
+    }
+
+    // Marca de "inicio de captura" — solo la primera vez que las 4
+    // fuentes están completas en esta sesión (ver nota en state.js).
+    if (!State.captureStartedAt) State.captureStartedAt = Date.now();
+
     runMerge();
+    // Nuevo merge completo = nueva sesión de corrección — el progreso
+    // de Correcciones y el "antes/después" de Calidad arrancan de cero
+    // contra el total fresco de este merge, no contra el de la corrida
+    // anterior.
+    UI.resetFixPeak();
+    UI.resetQualityBaseline();
     UI.renderTable();
     UI.updateStats();
     UI.setActionsEnabled(true);
     setTimeout(() => {
-      const sveResult = runSVE(State.merged);
+      const screenCount = State.xlsData ? State.xlsData.length : 0;
+      const sveResult = runSVE(State.merged, screenCount);
       if (sveResult) {
+        State.sveIssues = sveResult.issues;
         UI.renderSVE(sveResult.issues, sveResult.quality, sveResult.nCrit, sveResult.nWarn, sveResult.nInfo, sveResult.nPass);
       } else {
+        State.sveIssues = [];
         UI.resetSVE();
       }
+      // El status pill por fila, Correcciones, Calidad y Exportación
+      // dependen de State.sveIssues, recién poblado arriba — en ese
+      // orden: la barra de progreso de Correcciones fija su "pico"
+      // primero, y Calidad/Exportación reutilizan ese mismo pico.
+      UI.renderTable();
+      UI.renderFixList();
+      UI.renderQualityScreen();
+      UI.renderExportScreen();
       UI.updateHealthRail();
       UI.applyMode();
     }, 100);
   },
 
-  // ── Export (Camino B / Fase 3 — historial permanente) ──
-  // Tres ramas según el estado del SVE:
-  //   critical  → flash del gate, no exporta
-  //   warn-only → muestra WarnModal para confirmar (WarnModal.exportAnyway
-  //               llama Events.finalizeAndExport al confirmar)
-  //   clean     → finalizeAndExport directo
   handleExport() {
     if (State.sveHasCritical) {
       document.getElementById('svePanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -244,7 +354,6 @@ export const Events = {
     const nc   = parseInt(document.getElementById('sveCrit').textContent || '0', 10);
 
     document.getElementById('btnExport').disabled  = false;
-    document.getElementById('btnExport2').disabled = false;
     const gate = document.getElementById('exportGate');
     gate.classList.add('forced');
     gate.innerHTML = `<div class="gate-msg"><strong style="color:var(--orange)">⚠ Exportación forzada registrada</strong><span>${ts} · ${user} · Calidad: ${State.sveLastQuality}% · ${nc} error${nc>1?'es':''} crítico${nc>1?'s':''}.</span></div>`;
@@ -252,21 +361,11 @@ export const Events = {
     Events.finalizeAndExport({ exportType: 'despacho', action: 'forced', critErrors: nc });
   },
 
-  /**
-   * Punto único de entrada para toda exportación: persiste la sesión en
-   * el historial permanente de Supabase (dispatch_sessions/dispatch_rows)
-   * y SIEMPRE dispara la descarga local del Excel, incluso si el guardado
-   * remoto falla — un problema de red no debe impedir sacar el despacho
-   * del día. auditMeta se guarda tal cual en dispatch_sessions.meta.
-   * @param {object} auditMeta — { exportType, action, ...detalles }
-   */
   async finalizeAndExport(auditMeta = {}) {
     if (!State.merged.length) return;
     const ts   = new Date().toLocaleString('es-MX');
     const user = State.user || 'desconocido';
 
-    // Se conserva el audit log local (consola) además del historial
-    // permanente en Supabase — no son mutuamente excluyentes.
     State.sveAuditLog.push({ ts, user, action: (auditMeta.action || 'export').toUpperCase(), quality: State.sveLastQuality, ...auditMeta });
     console.info('[SVE AUDIT]', State.sveAuditLog[State.sveAuditLog.length - 1]);
 
@@ -275,12 +374,12 @@ export const Events = {
       await DispatchHistory.finalizeSession(State.merged, { ...auditMeta, ts, user });
     } catch (e) {
       console.warn('[DispatchHistory] No se pudo guardar el historial:', e.message);
-      // No bloqueamos la descarga local aunque falle el guardado remoto.
     }
     UI.setExportBusy(false);
 
     exportXLSX();
     Events.refreshTodayBanner();
+    UI.showCelebrate();
   },
 
   async refreshTodayBanner() {
@@ -290,7 +389,6 @@ export const Events = {
     UI.applyMode();
   },
 
-  // ── Historial de Procesamientos ──
   _historySessions: [],
   _currentHistorySession: null,
   _currentHistoryRows: null,
@@ -338,7 +436,6 @@ export const Events = {
     exportXLSX(rows, 'despacho', session.session_date);
   },
 
-  // ── Catalog (Camino B / Fase 1 — Supabase) ──
   async addCatalogEntry() {
     const op  = document.getElementById('catOpInput').value.trim();
     const lic = document.getElementById('catLicInput').value.trim();
@@ -381,5 +478,62 @@ export const Events = {
       UI.setCatStatus(result.msg, result.cls);
       if (result.ok && State.merged.length) Events.triggerMerge();
     } catch (e) { UI.setCatStatus('Error: ' + e.message, 'err'); }
+  },
+
+  // ═══════════════════════════════════════════════════════════════
+  // ── CENTRO DE MANTENIMIENTO (Fase 2, jul-2026) ──
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Carga las incidencias abiertas (ya ordenadas por prioridad, ver
+   * IncidentStore.listOpen()) y las pinta en el panel de
+   * Administración → Centro de Mantenimiento. Se llama cada vez que el
+   * usuario entra a ese sub-panel (ver app.js → adminNav listener) —
+   * los datos pueden haber cambiado desde la última corrida de merge,
+   * así que se refresca en cada visita en vez de cachear.
+   */
+  async loadMaintenanceCenter() {
+    UI.setMaintenanceStatus('Cargando…', 'ok');
+    try {
+      const incidents = await IncidentStore.listOpen();
+      UI.renderMaintenanceCenter(incidents);
+      UI.setMaintenanceStatus('', '');
+    } catch (e) {
+      UI.setMaintenanceStatus('Error: ' + e.message, 'err');
+    }
+  },
+
+  /**
+   * Marca una incidencia como resuelta manualmente (el usuario sabe
+   * que ya no va a repetirse aunque el sistema no lo detecte todavía —
+   * ej. corrección pendiente en el próximo Excel) y refresca el panel.
+   * @param {string} id — uuid de la incidencia en admin_incidents
+   */
+  async resolveIncident(id) {
+    UI.setMaintenanceStatus('Resolviendo…', 'ok');
+    try {
+      await IncidentStore.resolveManually(id, State.user);
+      await Events.loadMaintenanceCenter();
+    } catch (e) {
+      UI.setMaintenanceStatus('Error: ' + e.message, 'err');
+    }
+  },
+
+  /**
+   * Muestra/oculta la sección colapsable de incidencias resueltas.
+   * Se recarga desde Supabase cada vez que se abre (no se cachea) —
+   * mismo criterio que openHistory(): panel de baja frecuencia, el
+   * costo de una consulta extra es preferible a mostrar datos
+   * potencialmente obsoletos tras resolver una incidencia nueva.
+   */
+  async toggleResolvedIncidents() {
+    const wrap = document.getElementById('mcResolvedWrap');
+    if (!wrap) return;
+    const willShow = wrap.style.display === 'none';
+    wrap.style.display = willShow ? '' : 'none';
+    if (willShow) {
+      const resolved = await IncidentStore.listResolved();
+      UI.renderResolvedIncidents(resolved);
+    }
   }
 };

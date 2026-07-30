@@ -2,60 +2,51 @@
  * core/app.js
  * Bootstrap de SmartDispatch — punto de entrada de la aplicación.
  *
- * Responsabilidades:
- *   1. Resolver dependencias circulares EditSystem ↔ RoutePicker y UI ↔ Events
- *   2. Aplicar tema y usuario de la sesión anterior
- *   3. Cargar FactCache desde localStorage y pintar el panel de diagnóstico
- *      "Historial de caché"
- *   4. Registrar todos los listeners de eventos del DOM
- *   5. Inicializar el catálogo de operadores (Supabase — Camino B, Fase 1)
- *   6. Establecer el estado visual inicial del pipeline
- *   7. Mostrar el modal de bienvenida en el primer uso
+ * CAMBIO (rediseño completo — mockup jul-2026, Fases 1-4):
+ *   Las 6 pantallas del mockup (Preparación, Mesa de Trabajo,
+ *   Correcciones, Calidad, Exportación, Administración) ya tienen
+ *   diseño propio — el mecanismo de "alias hacia #legacyPanel" de las
+ *   fases anteriores se retira por completo: #legacyPanel ya no existe,
+ *   su contenido se redistribuyó a sus pantallas definitivas (ver
+ *   índice más abajo). goStep()/renderStepper() vuelven a su forma
+ *   simple: togglear .screen y, si el id pertenece a STEPS (los 5
+ *   pasos numerados — Administración queda fuera del flujo, se accede
+ *   por su propio botón en el topbar), actualizar el indicador.
  *
- * CAMBIO Camino B / Fase 1: init() ya no recibe el array CATALOG_DATA
- * como parámetro. El catálogo ahora se carga de forma asíncrona desde
- * la tabla `operators` de Supabase (ver features/catalog.js). Por eso
- * init() pasó a ser una función async — el bootstrap en index.html
- * ya no necesita pasarle nada.
+ *   Dónde quedó cada pieza de #legacyPanel:
+ *     - Botón de exportar (antes btnExport/btnExport2 duplicados) →
+ *       UN solo #btnExport, ahora el CTA principal de la pantalla
+ *       Exportación. btnExport2 se retira (ver ui.js).
+ *     - #exportGate (incluye "Exportar de todas formas") → vive
+ *       visible dentro de la pantalla Exportación, debajo del stage.
+ *     - Resto de #svePanel (resumen/incidencias) → se conserva en el
+ *       DOM permanentemente oculto (Correcciones ya cubre esa lista de
+ *       forma accionable) — sigue existiendo porque ui.js/events.js/
+ *       warn-modal.js leen sus IDs directamente.
+ *     - Catálogo de operadores, catálogos maestros, caché de facturas →
+ *       pantalla Administración, cada uno en su propia pestaña del
+ *       admin-nav (ya no hay acordeones .cat-toggle ni pestañas
+ *       .ref-tabs internas — el admin-nav las reemplaza).
+ *     - Botón de Historial → sigue en el topbar Y se agrega un acceso
+ *       directo en Administración → Historial (mismo Events.openHistory()).
  *
- * FIX (dependencia rota desde Fase 9/11 de Camino A): ui.js llama a
- * Events.delOp() y a Events.handleForceExport() pero nunca importaba
- * Events — funcionaba en el monolito porque Events vivía en el scope
- * global del IIFE, y quedó roto silenciosamente al modularizar. Se
- * resuelve con el mismo patrón de setter diferido ya usado entre
- * EditSystem y RoutePicker, para no crear un ciclo de imports estático
- * entre ui.js y events.js (events.js ya importa UI directamente).
+ * CAMBIO (jul-2026 — administración de catálogos maestros fila por fila):
+ *   Se agrega wireCatalogAdmin(catalogId, containerId) — delegación de
+ *   eventos GENÉRICA (un solo listener por contenedor) para los botones
+ *   "+ Agregar"/"✕" que UI.renderCatalogAdmin() genera dinámicamente
+ *   dentro de #mcVentanaAdmin/#mcPoolAdmin. No se listean los inputs
+ *   individualmente porque UI.renderCatalogAdmin() los reconstruye una
+ *   sola vez (guard por dataset.built) — igual patrón que el resto de
+ *   la app usa para tablas dinámicas (ver mainTbody/fixList/catTbody).
  *
- * CAMBIO Fase 1 del rediseño "Centro de Operaciones" (PulseBar): se
- * agrega un único listener nuevo — click en la PulseBar del topbar
- * hace scroll al panel SVE si está visible. Es intencionalmente el
- * único punto de interacción de la PulseBar en esta fase (ver
- * ui/pulse-bar.js — todavía no filtra ni prioriza nada, eso llega con
- * el Feed de Atención en la Fase 3).
- *
- * CAMBIO Fase 2 del rediseño (Datos de referencia): Catálogo de
- * operadores y Caché de facturas eran dos acordeones independientes
- * (catToggle/cacheHistToggle) — se fusionan en un solo panel
- * (refToggle) con pestañas internas (refTabs). Los IDs internos de
- * cada sección (catOpInput, catTbody, cacheHistList, etc.) no
- * cambiaron, así que ningún otro listener de este archivo ni de
- * ui.js/events.js/catalog.js/fact-cache.js necesitó modificarse.
- *
- * CAMBIO Fase 3 del rediseño (SVE colapsable): se agrega el listener
- * de sveSummaryToggle (expande/colapsa el cuerpo del panel SVE) y el
- * listener de la PulseBar ahora también expande el panel antes de
- * hacer scroll. La lógica de qué se muestra en el resumen y cuándo se
- * auto-expande vive en ui.js → renderSVE(), no aquí.
- *
- * CAMBIO Fase 5 del rediseño (ModeSurface / operationalMode): se
- * agregan dos llamadas a UI.applyMode() — una tras el estado visual
- * inicial del pipeline (aplica 'arranque' en el primer paint) y otra
- * tras resolver la sesión de hoy vía DispatchHistory.getTodaySession()
- * (que ahora también se guarda en State.todaySession, necesaria para
- * que el modo 'cerrado' se calcule correctamente). El resto de los
- * puntos donde el modo se recalcula viven en events.js (triggerMerge,
- * refreshTodayBanner) y edit-system.js (saveAndRevalidate) — ver sus
- * propias cabeceras.
+ * CAMBIO (Centro de Mantenimiento — Fase 2, jul-2026):
+ *   El listener de adminNav gana una línea: al entrar al sub-panel
+ *   'maint' se dispara Events.loadMaintenanceCenter() — igual criterio
+ *   que Historial (Events.openHistory()), que también refresca sus
+ *   datos cada vez que se abre en vez de cachear. Se agregan dos
+ *   listeners nuevos: resolver una incidencia individual (delegado
+ *   sobre #mcOpenTbody, mismo patrón que #catTbody/#mainTbody) y
+ *   mostrar/ocultar el histórico de resueltas (#btnMcToggleResolved).
  *
  * Dependencias: todos los módulos de la aplicación.
  */
@@ -70,6 +61,83 @@ import { initCatalog } from '../features/catalog.js';
 import { DispatchHistory } from '../features/dispatch-history.js';
 import { CatalogStore } from '../features/catalogs/catalog-store.js';
 
+// ── Stepper — navegación entre pantallas ──
+const STEPS = [
+  { id: 'prep',    label: 'Preparación' },
+  { id: 'table',   label: 'Mesa de Trabajo' },
+  { id: 'fix',     label: 'Correcciones' },
+  { id: 'quality', label: 'Calidad' },
+  { id: 'export',  label: 'Exportación' },
+];
+let currentStepIdx = 0;
+
+function renderStepper() {
+  const el = document.getElementById('stepper');
+  if (!el) return;
+  el.innerHTML = STEPS.map((s, i) => {
+    const cls = i < currentStepIdx ? 'done' : i === currentStepIdx ? 'active' : '';
+    const dotContent = i < currentStepIdx ? '✓' : (i + 1);
+    const conn = i < STEPS.length - 1 ? '<div class="step-connector"></div>' : '';
+    return `<div class="step ${cls}" data-goto="${s.id}"><div class="step-dot">${dotContent}</div><div class="step-label">${s.label}</div></div>${conn}`;
+  }).join('');
+  el.querySelectorAll('.step').forEach(elm => elm.addEventListener('click', () => goStep(elm.dataset.goto)));
+}
+
+/**
+ * Navega a cualquiera de las 6 pantallas reales de la app. Si el id
+ * pertenece a STEPS (los 5 pasos numerados del flujo operativo), el
+ * indicador del stepper se actualiza; Administración ('admin') está
+ * fuera de ese flujo — se accede por su propio botón en el topbar y no
+ * mueve el indicador de progreso.
+ */
+function goStep(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.toggle('active', s.dataset.screen === id));
+  const idx = STEPS.findIndex(s => s.id === id);
+  if (idx > -1) { currentStepIdx = idx; renderStepper(); }
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+/**
+ * Delegación de eventos GENÉRICA para el panel de administración
+ * fila-por-fila de un catálogo maestro (Ventana de Recibo / Pool Real).
+ * Ver nota de cabecera "CAMBIO (jul-2026 — administración de catálogos
+ * maestros fila por fila)". Un solo listener por contenedor cubre tanto
+ * el botón "+ Agregar" (data-mc-role="add") como cualquier botón "✕"
+ * de eliminar fila (data-mc-del="<uuid>") — ambos regenerados en cada
+ * UI.renderCatalogAdmin(catalogId).
+ * @param {string} catalogId — 'ventanaRecibo' | 'poolReal'
+ * @param {string} containerId — id del contenedor en index.html
+ */
+function wireCatalogAdmin(catalogId, containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.addEventListener('click', e => {
+    const addBtn = e.target.closest('[data-mc-role="add"]');
+    if (addBtn) {
+      const inputs = container.querySelectorAll('[data-mc-field]');
+      const values = {};
+      inputs.forEach(inp => { values[inp.dataset.mcField] = inp.value.trim(); });
+      Events.addCatalogRow(catalogId, values).then(() => {
+        // Limpia el formulario solo si el alta fue exitosa — si falló
+        // (ej. faltó el índice requerido), el usuario conserva lo ya
+        // capturado para corregir sin volver a escribir todo.
+        const statusEl = container.querySelector('[data-mc-role="status"]');
+        if (statusEl && statusEl.classList.contains('ok')) {
+          inputs.forEach(inp => { inp.value = ''; });
+        }
+      });
+      return;
+    }
+    const delBtn = e.target.closest('[data-mc-del]');
+    if (delBtn) {
+      const id = delBtn.dataset.mcDel;
+      if (!id) return;
+      if (!confirm('¿Eliminar este registro del catálogo? Esta acción no se puede deshacer.')) return;
+      Events.deleteCatalogRow(catalogId, id);
+    }
+  });
+}
+
 /**
  * Inicializa la aplicación completa.
  */
@@ -83,6 +151,10 @@ export async function init() {
   UI.applyTheme(State.theme);
   UI.setUser(State.user);
 
+  // ── Stepper ──
+  renderStepper();
+  document.getElementById('btnAdmin').addEventListener('click', () => goStep('admin'));
+
   // ── Load FactCache from Supabase (Camino B, Fase 2) ──
   State.factCache    = await FactCache.load();
   State.factCacheLog = await FactCache.loadLog();
@@ -92,17 +164,21 @@ export async function init() {
   }
   UI.renderCacheHistory();
 
-  // ── Drop zones ──
+  // ── Drop zones (4 fuentes obligatorias) ──
   Events.setupDrop('dropPDF', 'filePDF', Events.handlePDFs.bind(Events));
   Events.setupDrop('dropXLS', 'fileXLS', Events.handleXLS.bind(Events));
+  Events.setupDrop('dropWTMS', 'fileWTMS', Events.handleWTMS.bind(Events));
 
-  // ── Buttons ──
+  // ── Preparación — "Continuar" y "Reemplazar archivos" (vista contraída) ──
+  document.getElementById('btnGoTable').addEventListener('click', () => goStep('table'));
+  document.getElementById('btnPrepReset').addEventListener('click', () => UI.resetAll());
+
+  // ── Status de despacho (paste) ──
   document.getElementById('btnParse').addEventListener('click',      () => Events.handlePaste());
   document.getElementById('btnPasteClear').addEventListener('click', () => Events.clearPaste());
-  document.getElementById('btnExport').addEventListener('click',     () => Events.handleExport());
-  document.getElementById('btnExport2').addEventListener('click',    () => Events.handleExport());
-  document.getElementById('btnAddPDF').addEventListener('click',     () => document.getElementById('filePDF').click());
-  document.getElementById('btnClear').addEventListener('click',      () => UI.resetAll());
+
+  // ── Exportación ──
+  document.getElementById('btnExport').addEventListener('click', () => Events.handleExport());
 
   // ── Theme toggle ──
   document.getElementById('btnTheme').addEventListener('click', () =>
@@ -127,40 +203,70 @@ export async function init() {
     if (e.key === 'Enter') document.getElementById('nameModalBtn').click();
   });
 
-  // ── Pulse Bar (Fase 1 del rediseño) ──
-  // Click hace scroll al panel SVE si tiene algo que mostrar (clase
-  // 'on'). Desde la Fase 3, además lo expande — así el resumen de la
-  // PulseBar y el detalle del panel quedan conectados en un solo clic.
-  document.getElementById('pulseBar').addEventListener('click', () => {
-    const svePanel = document.getElementById('svePanel');
-    if (svePanel.classList.contains('on')) {
-      svePanel.classList.add('expanded');
-      svePanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // ── Mesa de Trabajo — búsqueda y filtros ──
+  document.getElementById('tableSearch').addEventListener('input', e => UI.setTableSearch(e.target.value));
+  document.getElementById('filterChips').addEventListener('click', e => {
+    const btn = e.target.closest('.fchip');
+    if (!btn) return;
+    UI.setTableFilter(btn.dataset.filter);
+  });
+
+  // ── Mesa de Trabajo — botón de editar por fila ──
+  document.getElementById('mainTbody').addEventListener('click', e => {
+    const btn = e.target.closest('.row-edit-btn');
+    if (!btn) return;
+    EditSystem.locateAndEdit(btn.dataset.editRuta, '', JSON.stringify([btn.dataset.editRowid]));
+  });
+
+  // ── Ir a Correcciones (botón en el header de Mesa de Trabajo) ──
+  const btnGoFix = document.getElementById('btnGoFix');
+  if (btnGoFix) btnGoFix.addEventListener('click', () => goStep('fix'));
+
+  // ── Correcciones — tarjetas de corrección rápida y "Revisar" ──
+  const handleFixCardClick = e => {
+    const saveBtn = e.target.closest('.fix-save');
+    if (saveBtn) {
+      const card  = saveBtn.closest('.fix-card');
+      const input = card.querySelector('.fix-input');
+      if (!input.value.trim()) { input.focus(); input.classList.add('fix-input-error'); return; }
+      const rowIds = JSON.parse(saveBtn.dataset.fixRowids || '[]');
+      EditSystem.quickFix(rowIds, saveBtn.dataset.fixKey, input.value);
+      return;
     }
+    const reviewBtn = e.target.closest('.fix-review-btn');
+    if (reviewBtn) {
+      EditSystem.locateAndEdit(reviewBtn.dataset.locateRuta, reviewBtn.dataset.locateField, reviewBtn.dataset.locateIds || '[]');
+    }
+  };
+  document.getElementById('fixList').addEventListener('click', handleFixCardClick);
+  document.getElementById('fixInfoList').addEventListener('click', handleFixCardClick);
+
+  // ── Correcciones — "Todo corregido" → Dashboard de Calidad (alias) ──
+  const btnGoQuality = document.getElementById('btnGoQuality');
+  if (btnGoQuality) btnGoQuality.addEventListener('click', () => goStep('quality'));
+
+  // ── Exportación — modal de celebración ──
+  document.getElementById('btnCelebrateClose')?.addEventListener('click', () => {
+    UI.hideCelebrate();
+    goStep('prep');
   });
 
-  // ── SVE — barra de resumen colapsable (Fase 3 del rediseño) ──
-  document.getElementById('sveSummaryToggle').addEventListener('click', () =>
-    document.getElementById('svePanel').classList.toggle('expanded'));
-
-  // ── Datos de referencia (Fase 2 del rediseño) ──
-  // Panel único con pestañas Catálogo/Caché — reemplaza los dos
-  // acordeones separados (catToggle/cacheHistToggle) que existían
-  // antes. Un solo listener de apertura + un listener delegado de
-  // cambio de pestaña (mismo patrón de delegación ya usado en
-  // sveAlerts/catTbody/routePicker más abajo).
-  document.getElementById('refToggle').addEventListener('click', () =>
-    document.getElementById('refPanel').classList.toggle('open'));
-  document.getElementById('refTabs').addEventListener('click', e => {
-    const tabBtn = e.target.closest('.ref-tab');
-    if (!tabBtn) return;
-    const tab = tabBtn.dataset.tab;
-    document.querySelectorAll('.ref-tab').forEach(b => b.classList.toggle('active', b === tabBtn));
-    document.querySelectorAll('.ref-tab-panel').forEach(p => p.classList.toggle('active', p.dataset.tabPanel === tab));
+  // ── Administración — navegación entre sub-paneles (Pool Real,
+  // Ventana de Recibo, Licencias, Caché de facturas, Centro de
+  // Mantenimiento, Historial, Configuración). Reemplaza los acordeones
+  // .cat-toggle y las pestañas .ref-tabs de las fases anteriores — ver
+  // nota de cabecera. ──
+  document.getElementById('adminNav').addEventListener('click', e => {
+    const btn = e.target.closest('.admin-nav-item');
+    if (!btn) return;
+    document.querySelectorAll('.admin-nav-item').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.admin-panel').forEach(p => p.classList.toggle('active', p.dataset.adminPanel === btn.dataset.admin));
+    // Centro de Mantenimiento (Fase 2, jul-2026) — se refresca cada vez
+    // que se entra al panel, mismo criterio que Historial
+    // (Events.openHistory()): datos pueden haber cambiado desde la
+    // última corrida de merge, mejor traerlos frescos que cachear.
+    if (btn.dataset.admin === 'maint') Events.loadMaintenanceCenter();
   });
-  // ── Catálogos Maestros (Camino C, Fase 3) ──
-  document.getElementById('masterCatToggle').addEventListener('click', () =>
-    document.getElementById('masterCatPanel').classList.toggle('open'));
   document.getElementById('mcVentanaFile').addEventListener('change', function() {
     Events.importMasterCatalog('ventanaRecibo', this.files[0]); this.value = '';
   });
@@ -168,10 +274,12 @@ export async function init() {
     Events.importMasterCatalog('poolReal', this.files[0]); this.value = '';
   });
 
-  // ── Catalog ──
-  // NOTA Camino B / Fase 1: el botón "💾 Guardar" (btnCatSave) se eliminó
-  // de index.html — ya no existe un paso manual de persistencia. Cada
-  // alta/baja/importación escribe en Supabase al instante (ver Events).
+  // ── Administración — Ventana de Recibo / Pool Real, alta y baja fila
+  // por fila (NUEVO, jul-2026) — ver wireCatalogAdmin() arriba. ──
+  wireCatalogAdmin('ventanaRecibo', 'mcVentanaAdmin');
+  wireCatalogAdmin('poolReal', 'mcPoolAdmin');
+
+  // ── Administración — Licencias (catálogo de operadores) ──
   document.getElementById('btnCatAdd').addEventListener('click',     () => Events.addCatalogEntry());
   document.getElementById('catLicInput').addEventListener('keydown', e => {
     if (e.key === 'Enter') Events.addCatalogEntry();
@@ -179,14 +287,29 @@ export async function init() {
   document.getElementById('catImportFile').addEventListener('change', function() {
     Events.importCatalog(this.files[0]); this.value = '';
   });
-  // Botón "✕" de cada fila — antes era onclick inline (Events.delOp(...))
-  // referenciando un global que ya no existe tras la modularización.
-  // Se reemplaza por delegación, mismo patrón que sveAlerts/routePicker.
   document.getElementById('catTbody').addEventListener('click', e => {
     const btn = e.target.closest('.btn-del');
     if (!btn) return;
     Events.delOp(btn.dataset.delOp);
   });
+
+  // ── Administración — Centro de Mantenimiento (Fase 2, jul-2026) ──
+  // Resolver una incidencia individual, delegado sobre la tabla —
+  // mismo patrón que #catTbody/#mainTbody (las filas se regeneran en
+  // cada render, un solo listener en el contenedor cubre todas). ──
+  document.getElementById('mcOpenTbody').addEventListener('click', e => {
+    const btn = e.target.closest('[data-mc-resolve]');
+    if (!btn) return;
+    if (!confirm('¿Marcar esta incidencia como resuelta manualmente? Esta acción no se puede deshacer.')) return;
+    Events.resolveIncident(btn.dataset.mcResolve);
+  });
+  document.getElementById('btnMcToggleResolved').addEventListener('click', () => Events.toggleResolvedIncidents());
+
+  // ── Administración — Historial y Configuración (accesos directos;
+  // mismo mecanismo que ya usan el ícono 🗂️ y el chip de usuario del
+  // topbar, no se duplica lógica) ──
+  document.getElementById('btnHistoryOpenAdmin')?.addEventListener('click', () => Events.openHistory());
+  document.getElementById('btnOpenSettingsAdmin')?.addEventListener('click', () => UI.openModal('settings'));
 
   // ── Historial de caché ──
   document.getElementById('btnCacheHistClear').addEventListener('click', async () => {
@@ -194,17 +317,6 @@ export async function init() {
     await FactCache.clear();
     await FactCache.clearLog();
     UI.renderCacheHistory();
-  });
-
-  // ── SVE "Localizar y corregir" — delegación de eventos ──
-  document.getElementById('sveAlerts').addEventListener('click', e => {
-    const btn = e.target.closest('.btn-locate');
-    if (!btn) return;
-    EditSystem.locateAndEdit(
-      btn.dataset.locateRuta,
-      btn.dataset.locateField,
-      btn.dataset.locateIds || '[]'
-    );
   });
 
   // ── Warn Confirm Modal ──
@@ -232,7 +344,7 @@ export async function init() {
     if (e.key === 'Escape') { EditSystem.close(); WarnModal.close(); RoutePicker.close(); }
   });
 
-  // ── Historial de Procesamientos (Camino B, Fase 3) ──
+  // ── Historial de Procesamientos ──
   document.getElementById('btnHistoryOpen').addEventListener('click', () => Events.openHistory());
   document.getElementById('btnHistoryClose').addEventListener('click', () =>
     document.getElementById('historyModalOverlay').classList.add('hidden'));
@@ -254,31 +366,34 @@ export async function init() {
   document.getElementById('btnTodayPreview').addEventListener('click', () => Events.previewTodaySession());
   document.getElementById('btnTodayRedownload').addEventListener('click', () => Events.redownloadToday());
 
-  // ── Init pipeline (visual, no depende del catálogo) ──
-  UI.setPipeStep(1, 'active', 'En espera');
+  // ── Init visual (no depende del catálogo) ──
   UI.setActionsEnabled(false);
+  UI.resetFixPeak();
+  UI.resetQualityBaseline();
+  UI.updatePrepView(['PDFs de cargas','Excel macro (RUTEO NUEVO)',"Status de despacho (RUTA + ID'S MASTER)",'Reporte WTMS']);
+  UI.renderTable();
+  UI.renderFixList();
+  UI.renderQualityScreen();
+  UI.renderExportScreen();
   UI.updateHealthRail();
   UI.applyMode();
 
   // ── Init catalog — Supabase (Camino B, Fase 1) ──
-UI.setCatStatus('Cargando catálogo…', 'ok');
+  UI.setCatStatus('Cargando catálogo…', 'ok');
 
-const catResult = await initCatalog();
+  const catResult = await initCatalog();
 
-UI.renderCatalog();
-UI.setCatStatus(catResult.msg, catResult.ok ? 'ok' : 'err');
+  UI.renderCatalog();
+  UI.setCatStatus(catResult.msg, catResult.ok ? 'ok' : 'err');
 
-// ───────────────────────────────────────────────────────────────
-// Init catálogos maestros (Camino C, Fase 1-2)
-// Se cargan silenciosamente. Todavía no existe UI para ellos
-// (llegará en Fase 3). El motor de enriquecimiento los utilizará
-// automáticamente cuando tengan información y hará no-op cuando
-// estén vacíos.
-// ───────────────────────────────────────────────────────────────
-// ── Init catálogos maestros (Camino C) ──
+  // ── Init catálogos maestros (Camino C) ──
   await CatalogStore.loadAll();
   UI.renderCatalogMasterStatus('ventanaRecibo');
   UI.renderCatalogMasterStatus('poolReal');
+  // NUEVO (jul-2026): tabla fila-por-fila de cada catálogo maestro —
+  // ver ui.js → renderCatalogAdmin().
+  UI.renderCatalogAdmin('ventanaRecibo');
+  UI.renderCatalogAdmin('poolReal');
 
   // ── Aviso de día ya procesado (Camino B, Fase 3) ──
   const todaySession = await DispatchHistory.getTodaySession();

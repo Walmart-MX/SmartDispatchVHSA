@@ -1,6 +1,6 @@
 /**
  * features/validation/sve.js
- * SMART VALIDATION ENGINE v1.1 — audita State.merged tras cada merge
+ * SMART VALIDATION ENGINE v1.3 — audita State.merged tras cada merge
  * y produce un reporte de incidencias (críticas, advertencias, informativas)
  * más un score de calidad 0-100.
  *
@@ -10,20 +10,102 @@
  *   Ahora: runSVE(rows) NO toca UI. Devuelve:
  *     - null                                            si no hay rows
  *     - { issues, quality, nCrit, nWarn, nInfo, nPass }  si hay rows
- *   El caller (Events.triggerMerge, todavía en index.html) es responsable
- *   de decidir qué hacer con UI.resetSVE() / UI.renderSVE() según el
- *   resultado. Esto elimina la dependencia sve.js → ui.js que habría sido
- *   necesaria de otro modo, y es el mismo cambio que se habría requerido
- *   en la Fase 9 de todas formas.
+ *   El caller (Events.triggerMerge, EditSystem.saveAndRevalidate) es
+ *   responsable de decidir qué hacer con UI.resetSVE() / UI.renderSVE()
+ *   según el resultado.
  *
- * Las 11 reglas (A-K) y el cálculo de quality score son IDÉNTICOS al
- * original — ningún cambio de lógica, solo el contrato de salida.
+ * CAMBIO (contexto de localización Ruta+Entrega — jul-2026):
+ *   Varias reglas consolidaban incidencias por RUTA únicamente, lo cual
+ *   ocultaba a qué ENTREGA (DETTE) específica pertenecía el problema
+ *   cuando una ruta tenía múltiples líneas. Se agrega un campo `dette`
+ *   al objeto de incidencia (issue), poblado según corresponda por cada
+ *   regla — ver detalle en versiones anteriores de este comentario.
  *
- * Nota de acoplamiento preexistente (regla K): esta función lee
- * document.getElementById('bdgXLS') directamente para comparar el
- * conteo mostrado en pantalla contra State.merged. Es un acceso a DOM
- * dentro de una función de validación — no ideal, pero se preserva tal
- * cual del original para no alterar comportamiento en esta fase.
+ * CAMBIO (rediseño Correcciones — mockup jul-2026):
+ *   - D1 (Operador/Licencia) se separa en DOS issues independientes en
+ *     vez de un field combinado "Operador, Licencia" — cada issue debe
+ *     mapear a UN solo campo editable para la tarjeta de corrección
+ *     rápida de Correcciones (ver ui.js → QUICKFIX_FIELD_MAP).
+ *   - F (zero_tar) y G (high_tar) pasan de agrupar por RUTA a agrupar
+ *     por RUTA + ENTREGA (DETTE) — consistente con D2 (tarimas
+ *     faltantes), confirmado con EduarDo: las tres reglas de tarimas
+ *     deben identificar la entrega exacta, no solo la ruta.
+ *   - D2 cambia su field de 'Tarimas' a 'TARIMAS' (mayúsculas) — mismo
+ *     texto que F/G, para que las tres mapeen al mismo campo editable.
+ *
+ * CAMBIO (rediseño Mesa de Trabajo — mockup jul-2026, "Fix regla K"):
+ *   runSVE(rows) ganaba una SEGUNDA fuente de verdad no declarada: leía
+ *   document.getElementById('bdgXLS').textContent directamente del DOM
+ *   para la regla K (integridad UI vs memoria). sve.js vuelve a ser una
+ *   función pura, sin ninguna lectura de document.*. runSVE(rows,
+ *   screenCount) recibe el conteo como PARÁMETRO — ver detalle abajo en
+ *   la regla K.
+ *
+ * CAMBIO (integridad de datos — jul-2026, "bug del marchamo heredado"):
+ *   Se detectó que un marchamo con formato inválido en el PDF podía
+ *   provocar que la entrega heredara marchamo Y factura de OTRA entrega
+ *   de la misma ruta (ver processors/merge.js y processors/pdf.js para
+ *   el detalle completo del root cause y su corrección). Dos ajustes
+ *   aquí, ambos de solo-lectura sobre datos ya calculados aguas arriba:
+ *
+ *   1) Regla J (bad_march) — REESCRITA. Antes escaneaba los valores
+ *      YA GUARDADOS en MARCHAMO 1-5 buscando formato inválido. Ahora
+ *      pdf.js valida cada marchamo en el momento de extraerlo (ver
+ *      processors/pdf.js, extracción tolerante por campo) y jamás dejó
+ *      pasar un valor inválido a MARCHAMO N — esa posición ya llegó
+ *      vacía. La fuente de esta regla pasa a ser r._marchamoIssues
+ *      (poblado en merge.js desde pdfRow.marchamoIssues): el valor
+ *      CRUDO que se intentó leer del PDF y no pasó el formato, para que
+ *      el usuario pueda verificarlo contra el documento original. Sigue
+ *      siendo SVE_INFO — la incidencia ACCIONABLE (el campo vacío) la
+ *      cubre automáticamente la regla E (no_march), que ya es quickfix.
+ *
+ *   2) Regla nueva 'pdf_ambiguous' (CRÍTICA) — cubre el caso distinto de
+ *      "no se pudo localizar NINGÚN bloque de PDF con certeza para esta
+ *      entrega" (más de un bloque candidato en la misma ruta, sin match
+ *      específico por factura/DETTE). A diferencia de bad_march, aquí
+ *      no hay un campo puntual que validar — es la entrega COMPLETA la
+ *      que quedó sin datos de PDF, por diseño (merge.js nunca adivina
+ *      entre candidatos ambiguos). Se excluye de la regla H (no_pdf)
+ *      para no duplicar el aviso con un mensaje menos preciso.
+ *
+ * CAMBIO (jul-2026 — revisión de reglas operativas, decisión de EduarDo):
+ *   1) Regla B (dup_tarimas) — ELIMINADA POR COMPLETO. EduarDo confirmó
+ *      que dos entregas de la misma ruta compartiendo el mismo conteo
+ *      de tarimas es un patrón NORMAL del día a día (no indica PDF mal
+ *      asignado como se asumía originalmente) — la regla generaba
+ *      ruido sin valor operativo real. Se retira la generación de la
+ *      incidencia y el cómputo que solo alimentaba a esta regla
+ *      (lineCount/tarMap y el helper rowIdsByRuta, que no tenía otro
+ *      consumidor). El ícono 'dup_tarimas' se retira de SVE_ICONS por
+ *      la misma razón — evitar código muerto.
+ *
+ *   2) Reglas L (no_ventana) y M (no_pool) — bajan de SVE_WARN a
+ *      SVE_INFO. Motivo: FORMATO/TIENDA/ESTADO/NOMBRE (Ventana de
+ *      Recibo) y LINEA/PLACA TRACTOR/ESQUEMA/PLACA REMOLQUE/CAP. (Pool
+ *      Real) NO son campos que el operador de captura pueda corregir
+ *      desde la Mesa de Trabajo o Correcciones — de hecho no existe
+ *      entrada para ellos en EDITABLE_FIELDS (editing/edit-system.js),
+ *      así que el botón "🔍 Revisar" que antes generaban llevaba a un
+ *      drawer sin ningún campo editable relacionado: un callejón sin
+ *      salida para el operador. La única corrección real es actualizar
+ *      el catálogo maestro correspondiente en Administración (acceso
+ *      reservado a quien administra Supabase). Como SVE_INFO: ya no
+ *      cuentan en el contador de "incidencias pendientes" de
+ *      Correcciones, ya no activan el modal de advertencias al
+ *      exportar, y solo restan 0.5 puntos de calidad (antes 2) — visible
+ *      igualmente en el panel de auditoría interno para quien necesite
+ *      diagnosticar cobertura de catálogos.
+ *
+ *   NOTA para EduarDo: la regla N (cat_dup, duplicados dentro del propio
+ *   catálogo) NO se tocó en este cambio — sigue siendo SVE_WARN. Se
+ *   comporta distinto a lo que tu mensaje sugería: aunque en las
+ *   tarjetas de Correcciones se muestra solo como texto informativo
+ *   (sin botón, porque no tiene RUTA asociada), SÍ sigue sumando al
+ *   contador de "incidencias pendientes" y al modal de advertencias
+ *   al exportar. Si quieres el mismo tratamiento informativo puro para
+ *   cat_dup, es un cambio de una línea (SVE_WARN → SVE_INFO) — avísame
+ *   y lo aplico igual que aquí.
  *
  * Dependencias:
  *   - State (core/state.js) — lee rows ya vía parámetro, pero escribe
@@ -38,90 +120,79 @@ export const SVE_WARN = 'ADVERTENCIA';
 export const SVE_INFO = 'INFORMATIVA';
 
 export const SVE_ICONS = {
-  'dup_march':'🔖','dup_tarimas':'📦','missing_ruta':'🔴','missing':'🟠',
+  'dup_march':'🔖','missing_ruta':'🔴','missing':'🟠',
   'no_march':'🔴','zero_tar':'📐','high_tar':'📐','no_pdf':'🟡',
-  'no_fac':'ℹ️','bad_march':'ℹ️','integrity':'🔗','no_ventana':'📇','no_pool':'🚚','cat_dup':'🗂️','time_anomaly':'⏱️'
+  'no_fac':'ℹ️','bad_march':'ℹ️','integrity':'🔗','no_ventana':'📇','no_pool':'🚚','cat_dup':'🗂️','time_anomaly':'⏱️',
+  'no_cita':'📅','pdf_ambiguous':'🧩'
 };
 
 /**
- * Ejecuta las 11 reglas de validación sobre las rows del merge.
+ * Ejecuta las reglas de validación sobre las rows del merge.
  *
  * @param {Array<object>} rows — normalmente State.merged
+ * @param {number} [screenCount] — conteo de rutas que el caller
+ *   considera "lo que muestra la pantalla" (típicamente
+ *   State.xlsData.length) — usado únicamente por la regla K
+ *   (integridad UI vs memoria). Si se omite, la regla K no se evalúa.
  * @returns {null|{
  *   issues: Array<object>,
  *   quality: number,
  *   nCrit: number, nWarn: number, nInfo: number, nPass: number
  * }} — null si rows está vacío (el caller debe llamar UI.resetSVE() en ese caso)
  */
-export function runSVE(rows) {
+export function runSVE(rows, screenCount) {
   if (!rows || !rows.length) return null;
 
   const raw = [];
-  // rawAdd signature: (sev, rule, ruta, field, desc, action, extra, rowIds?)
+  // rawAdd signature: (sev, rule, ruta, field, desc, action, extra, rowIds?, dette?)
   // rowIds: optional array of _rowId values identifying the exact merged row(s)
   // this issue refers to. When provided, EditSystem uses them for precise lookup
   // instead of falling back to RUTA string matching.
-  const rawAdd = (sev, rule, ruta, field, desc, action, extra, rowIds) =>
+  // dette: optional — entrega (DETTE) a la que pertenece la incidencia, para que
+  // el usuario identifique exactamente qué línea de la ruta debe corregir sin
+  // tener que buscar manualmente entre todas las entregas.
+  const rawAdd = (sev, rule, ruta, field, desc, action, extra, rowIds, dette) =>
     raw.push({ sev, rule,
                ruta:   String(ruta||'').trim(),
                field:  String(field||'').trim(),
                desc:   String(desc||'').trim(),
                action: String(action||'').trim(),
                extra:  String(extra||'').trim(),
-               rowIds: Array.isArray(rowIds) ? rowIds : [] });
+               rowIds: Array.isArray(rowIds) ? rowIds : [],
+               dette:  String(dette||'').trim() });
 
   const matched = rows.filter(r => r._matched);
 
-  // Helper: collect _rowId values for all rows matching a given RUTA
-  const rowIdsByRuta = ruta =>
-    rows.filter(r => String(r['RUTA']||'').trim() === ruta).map(r => r._rowId).filter(Boolean);
-
   // A: Marchamos duplicados entre rutas distintas
-  // marchMap stores: marc → { ruta, rowId }  — keeps the first row that claimed each marchamo
+  // marchMap stores: marc → { ruta, rowId, dette } — keeps the first row that claimed each marchamo
   const marchMap = new Map();
   rows.forEach(r => {
-    const ruta = String(getMapped(r,'RUTA')||'').trim();
+    const ruta  = String(getMapped(r,'RUTA')||'').trim();
+    const dette = String(getMapped(r,'DET')||'').trim();
     for (let m = 1; m <= 5; m++) {
       const marc = String(getMapped(r,`MARCHAMO ${m}`)||'').trim();
       if (!marc || marc === '0') continue;
       if (marchMap.has(marc)) {
         const prev = marchMap.get(marc);
         if (prev.ruta !== ruta) {
-          // Two distinct rutas claim the same marchamo — expose both rowIds so
-          // the user can pick which one to correct from the route selector.
           rawAdd(SVE_CRIT,'dup_march', ruta, `MARCHAMO ${m}`,
-            `Marchamo ${marc} asignado a ruta ${ruta} y también a ruta ${prev.ruta}.`,
+            `Marchamo ${marc} asignado a ruta ${ruta} (entrega ${dette||'—'}) y también a ruta ${prev.ruta} (entrega ${prev.dette||'—'}).`,
             'Confirma con la documentación cuál ruta lleva este marchamo.',
             marc,
-            [prev.rowId, r._rowId].filter(Boolean));
+            [prev.rowId, r._rowId].filter(Boolean),
+            dette);
         }
       } else {
-        marchMap.set(marc, { ruta, rowId: r._rowId });
+        marchMap.set(marc, { ruta, rowId: r._rowId, dette });
       }
     }
   });
 
-  // B: Tarimas idénticas en múltiples líneas de la misma ruta
-  const lineCount = new Map(), tarMap = new Map();
-  rows.forEach(r => {
-    const ruta = String(getMapped(r,'RUTA')||'').trim();
-    const tar  = String(getMapped(r,'TARIMAS')||'').trim();
-    if (!ruta) return;
-    lineCount.set(ruta, (lineCount.get(ruta)||0) + 1);
-    if (tar && tar !== '0') {
-      if (!tarMap.has(ruta)) tarMap.set(ruta, new Set());
-      tarMap.get(ruta).add(tar);
-    }
-  });
-  lineCount.forEach((cnt, ruta) => {
-    if (cnt < 2) return;
-    const vals = tarMap.get(ruta);
-    if (vals && vals.size === 1) rawAdd(SVE_WARN,'dup_tarimas', ruta, 'TARIMAS',
-      `Ruta ${ruta}: las ${cnt} líneas comparten el mismo conteo de tarimas (${[...vals][0]}) — posible asignación duplicada de PDF.`,
-      'Verifica si el PDF se asignó a múltiples líneas por error.',
-      `${[...vals][0]} tar. × ${cnt} líneas`,
-      rowIdsByRuta(ruta));
-  });
+  // B (RETIRADA jul-2026): "Tarimas idénticas en múltiples líneas de la
+  // misma ruta" — ver nota de cabecera "CAMBIO (jul-2026 — revisión de
+  // reglas operativas)". Confirmado por EduarDo: es un patrón normal
+  // del día a día, no una señal de PDF mal asignado. Se elimina la
+  // regla y su cómputo (lineCount/tarMap) por completo — sin reemplazo.
 
   // C: Registros sin RUTA
   let noRutaCnt = 0;
@@ -131,97 +202,151 @@ export function runSVE(rows) {
     'Revisa el Excel macro: busca filas con columna RUTA vacía.',
     noRutaCnt > 1 ? `×${noRutaCnt}` : '');
 
-  // D: Campos obligatorios vacíos — consolidado por ruta
-  // Track per-row which fields are missing so we can store the exact rowId
-  const missingByRuta = new Map();
-  const REQ = [
-    { field:'OPERADOR', label:'Operador', sev:SVE_CRIT },
-    { field:'TARIMAS',  label:'Tarimas',  sev:SVE_CRIT },
-    { field:'LIC.',     label:'Licencia', sev:SVE_WARN },
-  ];
+  // D1: Operador y Licencia — atributos de la RUTA COMPLETA (mismo dato
+  // para todas sus entregas), consolidados SOLO por RUTA — sin dette.
+  //
+  // CAMBIO (Correcciones — mockup jul-2026): antes ambos campos se
+  // combinaban en UN solo issue con field="Operador, Licencia" cuando
+  // faltaban los dos a la vez. Se separan en DOS issues independientes
+  // — uno por campo — porque la pantalla de Correcciones mapea cada
+  // issue a UNA tarjeta de corrección rápida con UN campo editable; un
+  // field compuesto no es editable con un solo input. Efecto
+  // secundario positivo: el panel SVE (legacyPanel) ahora también
+  // muestra Operador y Licencia como incidencias separadas, más
+  // preciso que el texto combinado anterior.
+  const missingOperadorByRuta = new Map();
+  const missingLicByRuta      = new Map();
   matched.forEach(r => {
     const ruta = String(getMapped(r,'RUTA')||'').trim();
     if (!ruta) return;
-    REQ.forEach(({ field, label, sev }) => {
-      if (!String(getMapped(r, field)||'').trim()) {
-        if (!missingByRuta.has(ruta)) missingByRuta.set(ruta, { fields: new Set(), sev: SVE_WARN, rowIds: new Set() });
-        const e = missingByRuta.get(ruta);
-        e.fields.add(label);
-        if (r._rowId) e.rowIds.add(r._rowId);
-        if (sev === SVE_CRIT) e.sev = SVE_CRIT;
-      }
-    });
+    if (!String(getMapped(r,'OPERADOR')||'').trim()) {
+      if (!missingOperadorByRuta.has(ruta)) missingOperadorByRuta.set(ruta, { rowIds: new Set() });
+      if (r._rowId) missingOperadorByRuta.get(ruta).rowIds.add(r._rowId);
+    }
+    if (!String(getMapped(r,'LIC.')||'').trim()) {
+      if (!missingLicByRuta.has(ruta)) missingLicByRuta.set(ruta, { rowIds: new Set() });
+      if (r._rowId) missingLicByRuta.get(ruta).rowIds.add(r._rowId);
+    }
   });
-  missingByRuta.forEach(({ fields, sev, rowIds }, ruta) => {
-    const fl  = [...fields].join(', ');
-    const act = fields.has('Licencia') && fields.size === 1
-      ? 'Agrega al operador en el catálogo.' : 'Revisa el PDF de esta ruta.';
-    rawAdd(sev,'missing', ruta, fl,
-      `Ruta ${ruta}: campo${fields.size>1?'s':''} incompleto${fields.size>1?'s':''} — ${fl}.`,
-      act, '', [...rowIds]);
-  });
+  missingOperadorByRuta.forEach(({ rowIds }, ruta) => rawAdd(SVE_CRIT,'missing', ruta, 'OPERADOR',
+    `Ruta ${ruta}: falta Operador.`,
+    'Revisa el PDF de esta ruta.', '', [...rowIds]));
+  missingLicByRuta.forEach(({ rowIds }, ruta) => rawAdd(SVE_WARN,'missing', ruta, 'LIC.',
+    `Ruta ${ruta}: falta Licencia.`,
+    'Agrega al operador en el catálogo.', '', [...rowIds]));
 
-  // E: Sin marchamo principal — consolidado por ruta
-  const noMarchByRuta = new Map();
+  // D2: Tarimas — varía por línea, consolidado por RUTA + ENTREGA (DETTE)
+  const missingTarimasByRutaDette = new Map();
   matched.forEach(r => {
-    const ruta = String(getMapped(r,'RUTA')||'').trim();
-    const m1   = String(getMapped(r,'MARCHAMO 1')||'').trim();
+    const ruta  = String(getMapped(r,'RUTA')||'').trim();
+    const dette = String(getMapped(r,'DET')||'').trim();
+    if (!ruta) return;
+    if (!String(getMapped(r,'TARIMAS')||'').trim()) {
+      const groupKey = ruta + '||' + dette;
+      if (!missingTarimasByRutaDette.has(groupKey)) missingTarimasByRutaDette.set(groupKey, { ruta, dette, rowIds: new Set() });
+      const e = missingTarimasByRutaDette.get(groupKey);
+      if (r._rowId) e.rowIds.add(r._rowId);
+    }
+  });
+  missingTarimasByRutaDette.forEach(({ ruta, dette, rowIds }) => rawAdd(SVE_CRIT,'missing', ruta, 'TARIMAS',
+    `Ruta ${ruta} · Entrega ${dette||'—'}: campo incompleto — Tarimas.`,
+    'Revisa el PDF de esta ruta.', '', [...rowIds], dette));
+
+  // D-bis: CITA pendiente — SIEMPRE SVE_INFO, nunca bloquea la exportación
+  const noCitaByRutaDette = new Map();
+  matched.forEach(r => {
+    const ruta  = String(getMapped(r,'RUTA')||'').trim();
+    const dette = String(getMapped(r,'DET')||'').trim();
+    if (!ruta) return;
+    if (!String(getMapped(r,'CITA')||'').trim()) {
+      const groupKey = ruta + '||' + dette;
+      if (!noCitaByRutaDette.has(groupKey)) noCitaByRutaDette.set(groupKey, { ruta, dette, rowIds: new Set() });
+      const e = noCitaByRutaDette.get(groupKey);
+      if (r._rowId) e.rowIds.add(r._rowId);
+    }
+  });
+  noCitaByRutaDette.forEach(({ ruta, dette, rowIds }) => rawAdd(SVE_INFO,'no_cita', ruta, 'CITA',
+    `Ruta ${ruta} · Entrega ${dette||'—'}: sin cita capturada.`,
+    'Verifica si esta entrega debe tener cita o déjala vacía si no aplica — no todas las entregas la requieren.',
+    '', [...rowIds], dette));
+
+  // E: Sin marchamo principal — consolidado por RUTA + ENTREGA (DETTE).
+  // Esta regla ahora también cubre el caso "marchamo con formato
+  // inválido en el PDF, dejado vacío por diseño" (ver processors/pdf.js
+  // y regla J más abajo) — MARCHAMO 1 queda vacío igual que si el PDF
+  // nunca lo hubiera traído, así que esta regla ya es la incidencia
+  // ACCIONABLE (quickfix) para ese caso, sin necesidad de duplicar lógica.
+  const noMarchByRutaDette = new Map();
+  matched.forEach(r => {
+    const ruta  = String(getMapped(r,'RUTA')||'').trim();
+    const dette = String(getMapped(r,'DET')||'').trim();
+    const m1    = String(getMapped(r,'MARCHAMO 1')||'').trim();
     if (!m1 || m1 === '0') {
-      if (!noMarchByRuta.has(ruta)) noMarchByRuta.set(ruta, { cnt: 0, rowIds: new Set() });
-      const e = noMarchByRuta.get(ruta);
+      const groupKey = ruta + '||' + dette;
+      if (!noMarchByRutaDette.has(groupKey)) noMarchByRutaDette.set(groupKey, { ruta, dette, cnt: 0, rowIds: new Set() });
+      const e = noMarchByRutaDette.get(groupKey);
       e.cnt++;
       if (r._rowId) e.rowIds.add(r._rowId);
     }
   });
-  noMarchByRuta.forEach(({ cnt, rowIds }, ruta) => {
-    const tot = lineCount.get(ruta) || 1;
-    rawAdd(SVE_WARN,'no_march', ruta,'MARCHAMO 1',
-      `Ruta ${ruta}: sin marchamo principal${cnt>1?` (${cnt}/${tot} líneas)`:''}. `,
-      'Verifica que el PDF contenga número de marchamo.',
-      cnt>1 ? `×${cnt} líneas`:'',
-      [...rowIds]);
-  });
+  noMarchByRutaDette.forEach(({ ruta, dette, cnt, rowIds }) => rawAdd(SVE_WARN,'no_march', ruta,'MARCHAMO 1',
+    `Ruta ${ruta} · Entrega ${dette||'—'}: sin marchamo principal${cnt>1?` (${cnt} líneas)`:''}.`,
+    'Verifica que el PDF contenga número de marchamo.',
+    cnt>1 ? `×${cnt} líneas`:'',
+    [...rowIds], dette));
 
-  // F: Tarimas = 0 — consolidado por ruta
-  const zeroTarByRuta = new Map();
+  // F: Tarimas = 0 — consolidado por RUTA + ENTREGA (DETTE).
+  // CAMBIO (Correcciones — mockup jul-2026): antes se consolidaba solo
+  // por RUTA, inconsistente con D2 (tarimas FALTANTES), que ya agrupa
+  // por entrega. Si una ruta con varias entregas tiene tarimas=0 en
+  // una sola línea, ahora se identifica exactamente cuál — mismo
+  // criterio para las tres reglas de tarimas (D2/F/G).
+  const zeroTarByRutaDette = new Map();
   matched.forEach(r => {
-    const ruta = String(getMapped(r,'RUTA')||'').trim();
-    const tar  = parseInt(String(getMapped(r,'TARIMAS')||'0').replace(/\D/g,''), 10);
+    const ruta  = String(getMapped(r,'RUTA')||'').trim();
+    const dette = String(getMapped(r,'DET')||'').trim();
+    const tar   = parseInt(String(getMapped(r,'TARIMAS')||'0').replace(/\D/g,''), 10);
     if (isNaN(tar) || tar === 0) {
-      if (!zeroTarByRuta.has(ruta)) zeroTarByRuta.set(ruta, { cnt: 0, rowIds: new Set() });
-      const e = zeroTarByRuta.get(ruta);
-      e.cnt++;
+      const groupKey = ruta + '||' + dette;
+      if (!zeroTarByRutaDette.has(groupKey)) zeroTarByRutaDette.set(groupKey, { ruta, dette, rowIds: new Set() });
+      const e = zeroTarByRutaDette.get(groupKey);
       if (r._rowId) e.rowIds.add(r._rowId);
     }
   });
-  zeroTarByRuta.forEach(({ cnt, rowIds }, ruta) => rawAdd(SVE_WARN,'zero_tar', ruta,'TARIMAS',
-    `Ruta ${ruta}: tarimas = 0 o no detectadas.`,
-    'Confirma que el PDF esté correctamente asignado a esta ruta.',
-    cnt>1?`×${cnt} líneas`:'',
-    [...rowIds]));
+  zeroTarByRutaDette.forEach(({ ruta, dette, rowIds }) => rawAdd(SVE_WARN,'zero_tar', ruta,'TARIMAS',
+    `Ruta ${ruta} · Entrega ${dette||'—'}: tarimas = 0 o no detectadas.`,
+    'Confirma que el PDF esté correctamente asignado a esta entrega.',
+    '', [...rowIds], dette));
 
-  // G: Tarimas > 60 — consolidado por ruta
-  const highTarByRuta = new Map();
+  // G: Tarimas > 60 — consolidado por RUTA + ENTREGA (DETTE). Mismo
+  // cambio que F — ver nota arriba.
+  const highTarByRutaDette = new Map();
   matched.forEach(r => {
-    const ruta = String(getMapped(r,'RUTA')||'').trim();
-    const tar  = parseInt(String(getMapped(r,'TARIMAS')||'0').replace(/\D/g,''), 10);
+    const ruta  = String(getMapped(r,'RUTA')||'').trim();
+    const dette = String(getMapped(r,'DET')||'').trim();
+    const tar   = parseInt(String(getMapped(r,'TARIMAS')||'0').replace(/\D/g,''), 10);
     if (tar > 60) {
-      const prev = highTarByRuta.get(ruta) || { tar: 0, rowIds: new Set() };
+      const groupKey = ruta + '||' + dette;
+      const prev = highTarByRutaDette.get(groupKey) || { ruta, dette, tar: 0, rowIds: new Set() };
       if (tar > prev.tar) prev.tar = tar;
       if (r._rowId) prev.rowIds.add(r._rowId);
-      highTarByRuta.set(ruta, prev);
+      highTarByRutaDette.set(groupKey, prev);
     }
   });
-  highTarByRuta.forEach(({ tar, rowIds }, ruta) => rawAdd(SVE_WARN,'high_tar', ruta,'TARIMAS',
-    `Ruta ${ruta}: tarimas inusualmente altas (${tar}).`,
+  highTarByRutaDette.forEach(({ ruta, dette, tar, rowIds }) => rawAdd(SVE_WARN,'high_tar', ruta,'TARIMAS',
+    `Ruta ${ruta} · Entrega ${dette||'—'}: tarimas inusualmente altas (${tar}).`,
     'Confirma si es una carga doble o error de lectura de PDF.',
     `${tar} tar.`,
-    [...rowIds]));
+    [...rowIds], dette));
 
-  // H: Rutas sin PDF — una alerta por ruta
+  // H: Rutas sin PDF — una alerta por ruta. Excluye filas marcadas
+  // _pdfAmbiguous (ver regla 'pdf_ambiguous' más abajo) — esas ya tienen
+  // un mensaje más preciso ("múltiples bloques candidatos") y reportarlas
+  // también aquí duplicaría el aviso con un texto genérico y menos útil.
   const noPdfByRuta = new Map();
   rows.forEach(r => {
     if (r._matched) return;
+    if (r._pdfAmbiguous) return;
     const ruta = String(getMapped(r,'RUTA')||'').trim();
     if (!ruta) return;
     if (!noPdfByRuta.has(ruta)) noPdfByRuta.set(ruta, { cnt: 0, rowIds: new Set() });
@@ -232,6 +357,28 @@ export function runSVE(rows) {
   noPdfByRuta.forEach(({ cnt, rowIds }, ruta) => rawAdd(SVE_WARN,'no_pdf', ruta,'OPERADOR / LIC. / MARCHAMOS',
     `Ruta ${ruta} sin PDF asociado${cnt>1?` (${cnt} entregas)`:''}.`,
     'Carga el PDF de esta ruta o verifica el nombre del archivo.',
+    cnt>1?`${cnt} entregas`:'',
+    [...rowIds]));
+
+  // H-bis: PDF ambiguo — existen dos o más bloques de carga candidatos
+  // para esta ruta y ninguno matcheó específicamente por factura/DETTE.
+  // NUNCA se adivina cuál corresponde (ver processors/merge.js) — se
+  // reporta como CRÍTICA en vez de asignar datos de otra entrega. Caso
+  // distinto de 'bad_march' (regla J): aquí no hay un campo puntual que
+  // validar, es la entrega completa la que quedó sin PDF por falta de
+  // certeza en el match, no por un dato puntual inválido.
+  const pdfAmbiguousByRuta = new Map();
+  rows.forEach(r => {
+    if (!r._pdfAmbiguous) return;
+    const ruta = String(getMapped(r,'RUTA')||'').trim();
+    if (!pdfAmbiguousByRuta.has(ruta)) pdfAmbiguousByRuta.set(ruta, { cnt: 0, rowIds: new Set() });
+    const e = pdfAmbiguousByRuta.get(ruta);
+    e.cnt++;
+    if (r._rowId) e.rowIds.add(r._rowId);
+  });
+  pdfAmbiguousByRuta.forEach(({ cnt, rowIds }, ruta) => rawAdd(SVE_CRIT,'pdf_ambiguous', ruta,'OPERADOR / LIC. / MARCHAMOS / FAC.',
+    `Ruta ${ruta}: existen múltiples bloques de carga en el PDF y no se puede determinar con certeza cuál corresponde a esta entrega${cnt>1?` (${cnt} entregas)`:''}.`,
+    'Verifica manualmente el DETTE/factura de esta entrega contra el PDF y corrige los campos.',
     cnt>1?`${cnt} entregas`:'',
     [...rowIds]));
 
@@ -252,30 +399,44 @@ export function runSVE(rows) {
     cnt>1?`×${cnt}`:'',
     [...rowIds]));
 
-  // J: Marchamos con formato incorrecto — consolidado por ruta
-  const badMarchByRuta = new Map();
+  // J: Marchamos con formato incorrecto — REESCRITA (integridad de
+  // datos, jul-2026). Antes escaneaba MARCHAMO 1-5 buscando texto con
+  // formato inválido; ahora eso ya nunca ocurre — pdf.js valida cada
+  // marchamo al extraerlo y deja vacía cualquier posición inválida (ver
+  // processors/pdf.js, extracción tolerante por campo). Esta regla lee
+  // en cambio r._marchamoIssues (poblado en merge.js desde
+  // pdfRow.marchamoIssues): el texto CRUDO que se intentó leer del PDF
+  // y no pasó la validación de formato — puramente informativa, para
+  // que el usuario pueda verificar contra el documento original. La
+  // incidencia ACCIONABLE (el campo ahora vacío) la cubre
+  // automáticamente la regla E (no_march), que ya es quickfix.
+  const badMarchByRutaDette = new Map();
   matched.forEach(r => {
-    const ruta = String(getMapped(r,'RUTA')||'').trim();
-    for (let m = 1; m <= 5; m++) {
-      const marc = String(getMapped(r,`MARCHAMO ${m}`)||'').trim();
-      if (!marc || marc==='0') continue;
-      if (!/^\d{5,6}$/.test(marc.replace(/^0/,''))) {
-        if (!badMarchByRuta.has(ruta)) badMarchByRuta.set(ruta, { vals: new Set(), rowIds: new Set() });
-        const e = badMarchByRuta.get(ruta);
-        e.vals.add(marc);
-        if (r._rowId) e.rowIds.add(r._rowId);
-      }
-    }
+    const issues = r._marchamoIssues || [];
+    if (!issues.length) return;
+    const ruta  = String(getMapped(r,'RUTA')||'').trim();
+    const dette = String(getMapped(r,'DET')||'').trim();
+    const groupKey = ruta + '||' + dette;
+    if (!badMarchByRutaDette.has(groupKey)) badMarchByRutaDette.set(groupKey, { ruta, dette, vals: new Set(), rowIds: new Set() });
+    const e = badMarchByRutaDette.get(groupKey);
+    issues.forEach(iss => e.vals.add(iss.raw));
+    if (r._rowId) e.rowIds.add(r._rowId);
   });
-  badMarchByRuta.forEach(({ vals, rowIds }, ruta) => {
+  badMarchByRutaDette.forEach(({ ruta, dette, vals, rowIds }) => {
     const sample = [...vals].slice(0,3).join(', ') + (vals.size>3?'…':'');
     rawAdd(SVE_INFO,'bad_march', ruta,'MARCHAMOS',
-      `Ruta ${ruta}: ${vals.size} marchamo${vals.size>1?'s':''} con formato inesperado (${sample}).`,
-      'Los marchamos deben ser numéricos de 5-6 dígitos.',
+      `Ruta ${ruta} · Entrega ${dette||'—'}: ${vals.size} marchamo${vals.size>1?'s':''} con formato inválido detectado en el PDF (${sample}) — se dejó vacío, no se copió de ninguna otra entrega.`,
+      'El texto extraído no cumple el formato esperado (5-6 dígitos). Verifica el PDF original y corrige manualmente el campo Marchamo.',
       vals.size>1?`×${vals.size}`:'',
-      [...rowIds]);
+      [...rowIds], dette);
   });
-// L: Ventana de Recibo — DETTE no encontrado (consolidado por ruta)
+
+  // L: Ventana de Recibo — DETTE no encontrado (consolidado por ruta).
+  // CAMBIO (jul-2026): SVE_WARN → SVE_INFO — ver nota de cabecera
+  // "CAMBIO (jul-2026 — revisión de reglas operativas)". No existe
+  // campo editable para FORMATO/TIENDA/ESTADO en EDITABLE_FIELDS — la
+  // única corrección real es actualizar el catálogo Ventana de Recibo
+  // en Administración, fuera del alcance del operador de captura.
   const noVentanaByRuta = new Map();
   matched.forEach(r => {
     const miss = (r._enrichMisses || []).find(m => m.catalog === 'ventanaRecibo');
@@ -286,13 +447,14 @@ export function runSVE(rows) {
     e.cnt++;
     if (r._rowId) e.rowIds.add(r._rowId);
   });
-  noVentanaByRuta.forEach(({ cnt, rowIds }, ruta) => rawAdd(SVE_WARN,'no_ventana', ruta,'FORMATO / TIENDA / ESTADO',
+  noVentanaByRuta.forEach(({ cnt, rowIds }, ruta) => rawAdd(SVE_INFO,'no_ventana', ruta,'FORMATO / TIENDA / ESTADO',
     `Ruta ${ruta}: DETTE no encontrado en el catálogo Ventana de Recibo.`,
-    'Verifica el DETTE en RUTEO NUEVO o actualiza el catálogo.',
+    'Verifica el DETTE en RUTEO NUEVO o actualiza el catálogo en Administración.',
     cnt>1?`×${cnt}`:'',
     [...rowIds]));
 
-  // M: Pool Real — ECO/REMOLQUE no encontrado (consolidado por ruta)
+  // M: Pool Real — ECO/REMOLQUE no encontrado (consolidado por ruta).
+  // CAMBIO (jul-2026): SVE_WARN → SVE_INFO — mismo motivo que la regla L.
   const noPoolByRuta = new Map();
   matched.forEach(r => {
     const misses = (r._enrichMisses || []).filter(m => m.catalog === 'poolReal');
@@ -305,9 +467,9 @@ export function runSVE(rows) {
   });
   noPoolByRuta.forEach(({ fields, rowIds }, ruta) => {
     const fl = [...fields].join(', ');
-    rawAdd(SVE_WARN,'no_pool', ruta, fl,
+    rawAdd(SVE_INFO,'no_pool', ruta, fl,
       `Ruta ${ruta}: ${fl} no encontrado en el catálogo Pool Real.`,
-      'Verifica TRACTOR/REMOLQUE (UNIDAD) en RUTEO NUEVO o actualiza el catálogo.',
+      'Verifica TRACTOR/REMOLQUE (UNIDAD) en RUTEO NUEVO o actualiza el catálogo en Administración.',
       '', [...rowIds]);
   });
 
@@ -339,20 +501,20 @@ export function runSVE(rows) {
       'Revisa las fechas capturadas de enrampe/retiro/despacho/caseta.',
       '', [...rowIds]);
   });
-  // K: Integridad UI vs memoria
-  const screenCnt = parseInt(document.getElementById('bdgXLS').textContent || '0', 10);
-  if (screenCnt && screenCnt !== rows.length)
+
+  // K: Integridad "pantalla" vs memoria — ver nota de cabecera "Fix regla K".
+  // screenCount llega como parámetro (antes se leía de #bdgXLS en el DOM).
+  if (screenCount && screenCount !== rows.length)
     rawAdd(SVE_CRIT,'integrity','','CONTEO',
-      `Discrepancia: UI muestra ${screenCnt} rutas, memoria contiene ${rows.length}.`,
+      `Discrepancia: se esperaban ${screenCount} rutas del Excel, memoria contiene ${rows.length}.`,
       'Recarga la página y vuelve a procesar los archivos.',
-      `UI:${screenCnt}/MEM:${rows.length}`);
+      `Excel:${screenCount}/MEM:${rows.length}`);
 
   // ── DEDUP ENGINE ──
-  // Key: rule + ruta + field — prevents duplicates from any code path
   const seen = new Set();
   const issues = [];
   for (const issue of raw) {
-    const key = `${issue.rule}||${issue.ruta}||${issue.field}`;
+    const key = `${issue.rule}||${issue.ruta}||${issue.field}||${issue.dette}`;
     if (!seen.has(key)) { seen.add(key); issues.push(issue); }
   }
 

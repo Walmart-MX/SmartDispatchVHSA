@@ -1,14 +1,44 @@
 /**
  * core/constants.js
- * Constantes globales de la aplicación: límites, nombres de columnas,
- * conjuntos de columnas por origen de dato, alias de detección, y el
- * resolver de columnas (COL_MAP / getMapped).
+ * Constantes globales de la aplicación.
  *
- * Dependencia especial: COL_MAP['CAPTURA'] necesita State.user para
- * resolver el nombre de quien captura. Por eso este módulo importa
- * State desde state.js. Si state.js alguna vez necesita importar algo
- * de aquí, hay que romper ese ciclo extrayendo COL_MAP a un tercer
- * archivo — por ahora no es necesario.
+ * CAMBIO (integración Reporte WTMS — 4ª fuente obligatoria, jul-2026):
+ *   - Se agrega WTMS_ALIASES.
+ *   - COL_MAP gana 'ID RETORNO' y 'CARTA PORTE', resueltas siempre
+ *     desde nr['_ID_RETORNO']/nr['_CARTA_PORTE'] (armados en merge.js
+ *     a partir del cruce con el WTMS). Sobreescritura intencional.
+ *   - 'ID RETORNO'/'CARTA PORTE' se agregan a COLS_DESP y PREVIEW_COLS.
+ *
+ * CAMBIO (rediseño Mesa de Trabajo — mockup jul-2026):
+ *   - Se agrega WORKTABLE_COLS: el subconjunto de columnas que muestra
+ *     la nueva tabla de Mesa de Trabajo (ui.js → renderTable()), fiel
+ *     al set de columnas del mockup (Ruta, Operador, Lic., Tarimas,
+ *     Marchamo, Factura, Tienda, Tractor, Remolque — Estado y el botón
+ *     de editar se resuelven aparte, no vía getMapped()). PREVIEW_COLS
+ *     NO se toca — sigue siendo el set completo usado por
+ *     renderHistoryPreview() en el modal de Historial, que conserva su
+ *     diseño anterior.
+ *
+ * AJUSTE (jul-2026 — archivo final): tres cambios solicitados sobre el
+ * archivo exportado, sin tocar ningún otro consumidor de estas
+ * constantes:
+ *   1) COL_MAP['FECHA'] ahora prioriza r['_FECHA_TEXT'] — el texto
+ *      EXACTO que Excel mostraba en la celda FECHA de RUTEO NUEVO (ver
+ *      processors/excel.js, capturado directamente de la celda cruda
+ *      vía `.w`, sin pasar por ningún objeto Date). r['FECHA'] (el Date
+ *      que sigue usando fiscal-calendar.js/merge.js para SW/DIA) se
+ *      mantiene como fallback si por algún motivo no se detectó la
+ *      columna FECHA al leer el Excel — no debería ocurrir en el uso
+ *      normal, pero así el archivo final nunca queda con la celda vacía.
+ *   2) COL_MAP['DIA'] ahora exporta el nombre del día TOTALMENTE EN
+ *      MAYÚSCULAS ("LUNES" en vez de "Lunes"). Único punto de lectura
+ *      de esta columna — merge.js (DIA_NAMES) no cambia.
+ *   3) INT_COLS gana 'ID IDA', 'ID RETORNO' y 'CARTA PORTE': el
+ *      exportador (features/export.js) ya sabe convertir cualquier
+ *      columna de INT_COLS a número real y aplicarle formato '0' —
+ *      agregar estas tres columnas al Set basta para que Excel las
+ *      reconozca como número sin necesidad del paso manual
+ *      "Convertir a número". No requiere ningún cambio en export.js.
  */
 import { State } from './state.js';
 
@@ -22,7 +52,6 @@ export const COL_FACT    = 'FACTURAS';
 export const SHEET_RUTEO    = ['RUTEO NUEVO', 'RUTEO', 'HOJA1', 'SHEET1'];
 export const SHEET_FACTURAS = ['CONCENTRADO FACTURAS', 'FACTURAS', 'CONCENTRADO', 'FACT'];
 
-/** Orden exacto de columnas en el Excel exportado */
 export const BASE_ORDER = [
   'FECHA','DIA','SW','LINEA','ENTREGA','ENT1','RUTA',
   'ID IDA','COSTOS IDA','STATUS IDA','ID RETORNO','COSTO RETORNO','STATUS RETORNO',
@@ -35,30 +64,50 @@ export const BASE_ORDER = [
   'HR. DESPACHO','SALIDA DE CASETA ','TIEMPO DE DESP','TIEMPO EN PATIO','CITA'
 ];
 
-// Column source sets (para colorear la tabla y el Excel exportado)
 export const COLS_PDF  = new Set(['OPERADOR','LIC.','TARIMAS',
   'MARCHAMO 1','MARCHAMO 2','MARCHAMO 3 ','MARCHAMO 4','MARCHAMO 5','FAC.','CITA']);
 export const COLS_FILL = new Set(['FECHA','DET','ENTREGA','ENT1','RUTA','CAJAS',
   'CORTINA','TRACTOR ','REMOLQUE','TEMP. ENRAMPE','TEMP. DESENRAMPE',
   'SOLICITUD DE ENRAMPE','ENRAMPE','RETIRO']);
 export const COLS_DESP = new Set(['GLS DE EMB.','HORA DE FACTURACION',
-  'ID IDA','HR. DESPACHO','SALIDA DE CASETA ','USUARIO WTMS']);
+  'ID IDA','HR. DESPACHO','SALIDA DE CASETA ','USUARIO WTMS','ID RETORNO','CARTA PORTE']);
 
 export const PREVIEW_COLS = [
   'FECHA','ENTREGA','ENT1','RUTA','DET','OPERADOR','LIC.',
   'TARIMAS','MARCHAMO 1','FAC.',
   'GLS DE EMB.','HORA DE FACTURACION',
-  'ID IDA','HR. DESPACHO','SALIDA DE CASETA ','USUARIO WTMS',
+  'ID IDA','ID RETORNO','CARTA PORTE','HR. DESPACHO','SALIDA DE CASETA ','USUARIO WTMS',
   'CAJAS','CORTINA','TRACTOR ','ENRAMPE','RETIRO','CITA'
 ];
 
+/**
+ * WORKTABLE_COLS — columnas de datos de la nueva tabla "Mesa de Trabajo"
+ * (fiel al mockup de rediseño). Deliberadamente un subconjunto reducido
+ * de PREVIEW_COLS — el mockup prioriza legibilidad sobre exhaustividad;
+ * el detalle completo de una ruta se consulta abriendo el drawer de
+ * edición (EditSystem), que ya expone EDITABLE_FIELDS con más campos.
+ * 'TIENDA' no tiene entrada en COL_MAP — getMapped() cae a row['TIENDA']
+ * directo, que es exactamente donde enrichRow() (Ventana de Recibo) lo
+ * escribe. 'ESTADO' de la fila (pill Completa/Advertencia/Crítica/
+ * Corregida) NO vive aquí — se deriva aparte en ui.js a partir de
+ * State.sveIssues + State.edits, no es una columna de datos mapeable.
+ */
+export const WORKTABLE_COLS = [
+  'RUTA', 'OPERADOR', 'LIC.', 'TARIMAS', 'MARCHAMO 1', 'FAC.', 'TIENDA', 'TRACTOR ', 'REMOLQUE'
+];
+
+// AJUSTE (jul-2026 — archivo final): se agregan 'ID IDA', 'ID RETORNO'
+// y 'CARTA PORTE' — ver nota de cabecera. El exportador (features/export.js)
+// ya convierte cualquier columna listada aquí a número real (parseInt)
+// y le aplica formato numérico '0'; no requiere ningún cambio adicional
+// ahí, solo esta entrada de configuración.
 export const INT_COLS      = new Set(['DET','RUTA','TARIMAS','CAJAS','CORTINA',
-  'MARCHAMO 1','MARCHAMO 2','MARCHAMO 3 ','MARCHAMO 4','MARCHAMO 5','FAC.','GLS DE EMB.','SW']);
+  'MARCHAMO 1','MARCHAMO 2','MARCHAMO 3 ','MARCHAMO 4','MARCHAMO 5','FAC.','GLS DE EMB.','SW',
+  'ID IDA','ID RETORNO','CARTA PORTE']);
 export const DATE_COLS     = new Set(['FECHA']);
 export const DATETIME_COLS = new Set(['HORA DE FACTURACION','HR. DESPACHO',
   'SALIDA DE CASETA ','CITA','SOLICITUD DE ENRAMPE','ENRAMPE','RETIRO']);
 
-/** Alias regex para detectar columnas del panel de pegado de despacho */
 export const DESP_ALIASES = {
   ruta:   /^ruta$/i,
   hrDesp: /hr.*desp|hora.*desp|despacho|hr\.?\s*desp/i,
@@ -68,16 +117,29 @@ export const DESP_ALIASES = {
 };
 
 /**
- * Resolver de columnas — sustituye la cadena de 30 if/else original.
- * Cada función recibe el row del merge y devuelve el valor a mostrar/exportar
- * para esa columna del Excel final.
+ * Alias regex para detectar columnas del Reporte WTMS (CSV).
+ * Se aplican sobre el encabezado ya normalizado con stripAccents()+trim().
  */
+export const WTMS_ALIASES = {
+  idCarga:        /^id\s*de\s*la\s*carga$/i,
+  cartePorte:     /^carte\s*porte$/i,
+  siguienteCarga: /^siguiente\s*carga$/i
+};
+
 export const COL_MAP = {
-  'FECHA':                r => r['FECHA']       ?? '',
-  'DIA':                  r => r['_DIA']        ?? '',   // ← NUEVO
-  'SW':                   r => r['_SW']         ?? '',   // ← ya agregado en el paso anterior
+  // AJUSTE (jul-2026 — archivo final): usa el TEXTO EXACTO capturado
+  // en processors/excel.js (r['_FECHA_TEXT'], leído directo de la
+  // celda cruda de RUTEO NUEVO, sin pasar por ningún objeto Date). Si
+  // por algún motivo no se detectó la columna al leer el archivo,
+  // cae a r['FECHA'] (el Date que fiscal-calendar.js/merge.js usan
+  // para SW/DIA) como respaldo — nunca se queda vacía sin razón.
+  'FECHA':                r => r['_FECHA_TEXT'] || r['FECHA'] || '',
+  // AJUSTE (jul-2026 — archivo final): mayúsculas completas, ver nota
+  // de cabecera. Único punto de lectura de esta columna — merge.js
+  // (DIA_NAMES) sigue generando "Lunes"/"Martes"/etc. sin cambios.
+  'DIA':                  r => String(r['_DIA'] ?? '').trim().toUpperCase(),
+  'SW':                   r => r['_SW']         ?? '',
   'ENTREGA':              r => r['SETEO']        ?? '',
-  // ... resto sin cambios ...
   'ENT1':                 r => r['ENT1']         ?? '',
   'RUTA':                 r => r['RUTA']         ?? '',
   'DET':                  r => r['DETTE']        ?? '',
@@ -107,34 +169,14 @@ export const COL_MAP = {
   'HORA DE FACTURACION':  r => r['_HORA_FACT']   ?? '',
   'HR. DESPACHO':         r => r['_HR_DESP'] || r['_HR_DESP_PDF'] || '',
   'USUARIO WTMS':         r => r['_WTMS']        ?? '',
+  'ID RETORNO':           r => r['_ID_RETORNO']  ?? '',
+  'CARTA PORTE':          r => r['_CARTA_PORTE'] ?? '',
 };
 
-/**
- * Devuelve el valor de una columna para un row del merge,
- * usando COL_MAP si existe una regla especial, o el campo directo si no.
- * @param {object} row
- * @param {string} col
- * @returns {*}
- */
 export function getMapped(row, col) {
   return (COL_MAP[col] ? COL_MAP[col](row) : row[col]) ?? '';
 }
-/**
- * Columnas cuyo valor debe preservarse como texto literal — NUNCA como
- * objeto Date. FECHA / TEMP. ENRAMPE / TEMP. DESENRAMPE / SOLICITUD DE
- * ENRAMPE / ENRAMPE / RETIRO vienen de RUTEO NUEVO (ver processors/
- * excel.js). HORA DE FACTURACION viene de la hoja CONCENTRADO FACTURAS
- * (misma función excel.js → processXLS, vía formatFactDate en
- * utils/format.js) y se agrega aquí tras detectar el mismo patrón de
- * bug: aunque el texto se extrajera correctamente, al no estar en esta
- * lista, features/export.js lo reconstruía como Date vía parseDateTime()
- * antes de escribirlo — y SheetJS serializa cualquier Date usando sus
- * componentes UTC, introduciendo el mismo desfase de zona horaria que
- * ya se había corregido para las demás columnas. Usada por
- * processors/excel.js (indirectamente, vía formatFactDate) y
- * features/export.js (para saber qué columnas NO deben pasar por
- * ninguna lógica de Date al exportar).
- */
+
 export const RAW_TEXT_DATE_COLS = new Set([
   'FECHA', 'TEMP. ENRAMPE', 'TEMP. DESENRAMPE', 'SOLICITUD DE ENRAMPE',
   'ENRAMPE', 'RETIRO', 'HORA DE FACTURACION'

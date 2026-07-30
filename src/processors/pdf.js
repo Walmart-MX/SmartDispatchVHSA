@@ -4,49 +4,85 @@
  *
  * Dos funciones encadenadas:
  *   pdfExtract(file) → lee el PDF con pdf.js, devuelve líneas de texto
- *                       agrupadas por posición Y, y anotaciones FreeText/Text
- *                       (citas).
+ *                       agrupadas por posición Y, y anotaciones FreeText (citas).
  *   parsePDF(extracted, filename) → interpreta esas líneas con regex
  *                       específicas del formato del documento, devuelve
  *                       un array de rows { ruta, operador, destino, factura,
- *                       tarimas, marchamos, cita, hrDespacho }.
+ *                       tarimas, marchamos, marchamoIssues, cita, hrDespacho }.
  *
- * FIX (auditoría post-Camino B):
- *   1. hrDespacho: el sello "Impreso / enviado por fax" lo imprime el
- *      sistema de Walmart en formato MM/DD/YYYY (convención de EEUU); el
- *      resto de la app usa DD/MM/YYYY. Antes se reensamblaban los grupos
- *      capturados sin invertir día/mes — ahora se invierten, con una
- *      validación defensiva (si el primer grupo no puede ser un mes
- *      válido, se asume que ya viene en DD/MM/YYYY y no se toca).
- *   2. parsePDF(): el regex que detecta "PDF unificado de dos rutas"
- *      (ej. "12345-67890.pdf") también matcheaba nombres de ruta partida
- *      como "4102-2.pdf", interpretándolos erróneamente como dos rutas
- *      separadas ("4102" y "2") en vez de una sola ruta ("4102-2"). Se
- *      agrega una heurística: si el segundo grupo tiene notablemente
- *      menos dígitos que el primero, se trata como sufijo de ruta partida
- *      (una sola ruta), no como PDF unificado. Caso límite documentado:
- *      si algún día existe un PDF unificado real donde la segunda ruta
- *      tiene menos dígitos que la primera, esta heurística lo clasificaría
- *      mal — no se ha observado ese caso en los datos actuales.
- *   3. pdfExtract(): los regex de fecha/hora de las citas (anotaciones)
- *      eran demasiado rígidos (exigían exactamente 2 dígitos de día/mes y
- *      4 de año, separador de hora limitado a : . ;). Se amplían para
- *      aceptar 1-2 dígitos de día/mes, año de 2 o 4 dígitos, y espacio
- *      como separador de hora — superconjunto estricto de lo anterior,
- *      no se pierden matches previos. También se aceptan anotaciones
- *      subtype 'Text' además de 'FreeText'.
+ * FIX DE INTEGRIDAD DE DATOS — extracción tolerante por campo (jul-2026):
+ *   Antes, ROW_RE capturaba factura + tarimas + marchamo de encabezado
+ *   en UN SOLO regex atómico con el marchamo forzado a `\d{5,6}`. Si el
+ *   marchamo llegaba con formato inválido (ej. "3732226", 7 dígitos),
+ *   el regex COMPLETO fallaba — se perdían también factura y tarimas,
+ *   que sí eran válidos y pertenecían legítimamente a esa entrega.
+ *   Esa era la validación "todo o nada" real: no estaba en merge.js
+ *   (que decide si usar un bloque ya extraído), sino aquí, en cómo se
+ *   reconocía la posición de cada campo dentro del bloque.
+ *
+ *   Ahora la extracción y la validación del marchamo están desacopladas:
+ *     - ROW_RE / CONT_RE reconocen la posición del marchamo con un
+ *       patrón amplio (\S+) — así factura, tarimas y destino se separan
+ *       correctamente SIEMPRE, sin importar si el marchamo es válido.
+ *     - Cada marchamo candidato (encabezado + continuaciones) se valida
+ *       de forma independiente contra el formato estricto (_isValidMarchamo).
+ *     - Si es válido → se conserva en `marchamos[i]`.
+ *     - Si no → esa posición queda '' (nunca se inventa ni se reutiliza
+ *       un valor de otra entrega) y se registra en `marchamoIssues`
+ *       (valor crudo descartado, para diagnóstico) — ver
+ *       features/validation/sve.js, regla 'bad_march'.
+ *   Ningún campo inválido invalida ni afecta a los demás campos del
+ *   mismo bloque — principio de "máxima recuperación de información
+ *   confiable, mínima intervención manual".
+ *
+ * FIX (jul-2026) — HR. DESPACHO con fecha invertida:
+ *   El sello "Impreso/enviado por fax" del PDF imprime la fecha en
+ *   formato inglés MM-DD-YYYY (confirmado con muestra real:
+ *   "07-26-2026 01:28:46 CT" = 26 de julio de 2026), pero el código
+ *   anterior tomaba los tres números tal cual y los unía sin
+ *   reordenar, asumiendo que ya venían como DD/MM/YYYY. Resultado: se
+ *   guardaba "07/26/2026" (mes=07, "día"=26) y parseDateTime()/
+ *   normalizeAppointment() (utils/date.js), que SIEMPRE interpretan el
+ *   primer número como día y el segundo como mes, terminaban armando
+ *   new Date(2026, 25, 7, ...) — mes 26 desborda en JavaScript y
+ *   "rueda" el año hacia adelante (de ahí el salto a 2028 observado en
+ *   producción). Se invierten aquí mismo pts[0]/pts[1] al capturar la
+ *   fecha del sello, para dejarla en DD/MM/YYYY, formato que espera el
+ *   resto de la app — ningún otro módulo (date.js, merge.js,
+ *   constants.js) cambia.
  *
  * Dependencia externa: pdfjsLib (cargado globalmente desde el CDN en
  * index.html, con su workerSrc ya configurado ahí). Este módulo no
  * configura el worker — eso es responsabilidad del bootstrap en index.html.
  *
  * Sin dependencias de State, DOM, ni otros módulos propios — son
- * funciones puras de transformación de datos.
+ * funciones puras de transformación de datos. MAX_MARCH_SLOTS se
+ * duplica localmente (mismo valor que MAX_MARCH en core/constants.js)
+ * en vez de importarlo, para preservar esa independencia — pdf.js no
+ * debe depender de ningún otro módulo propio.
  */
+
+/** Máximo de marchamos por entrega — debe coincidir con MAX_MARCH (core/constants.js). */
+const MAX_MARCH_SLOTS = 5;
+
+/** Formato válido de marchamo: 5-6 dígitos, con o sin cero inicial. */
+const MARC_RE = /^0?\d{5,6}$/;
+
+/** Detección "candidata" de continuación de marchamo — más laxa que
+ *  MARC_RE a propósito: solo sirve para decidir si una línea DEBE
+ *  tratarse como un intento de marchamo (y por lo tanto seguir
+ *  consumiéndola dentro del bloque de esta entrega) o no. La validez
+ *  real del contenido se decide aparte con _isValidMarchamo(). */
+const MARC_CANDIDATE_RE = /^\d{3,10}$/;
+
+/** Valida el formato final de un marchamo ya extraído. @private */
+function _isValidMarchamo(s) {
+  return MARC_RE.test(String(s || '').trim());
+}
 
 /**
  * Extrae todas las líneas de texto (agrupadas por posición vertical)
- * y las anotaciones de tipo FreeText/Text (citas de cada destino) de un PDF.
+ * y las anotaciones de tipo FreeText (citas de cada destino) de un PDF.
  *
  * @param {File} file
  * @returns {Promise<{ lines: Array<{pageNum:number,y:number,text:string}>,
@@ -80,10 +116,7 @@ export async function pdfExtract(file) {
 
     const rawAnnots = await page.getAnnotations();
     for (const a of rawAnnots) {
-      // FIX #7: además de 'FreeText', algunos PDFs codifican la cita
-      // como anotación 'Text' (nota adhesiva) — se amplía sin cambiar
-      // el resto de la lógica de extracción de texto.
-      if (a.subtype !== 'FreeText' && a.subtype !== 'Text') continue;
+      if (a.subtype !== 'FreeText') continue;
       let parts = [];
       if (Array.isArray(a.textContent) && a.textContent.length) {
         parts = a.textContent.map(s => String(s).trim()).filter(Boolean);
@@ -91,40 +124,11 @@ export async function pdfExtract(file) {
         const plain = (a.contents || a.alternativeText || '').trim();
         if (plain) parts = [plain];
       }
-      const allText = parts.join(' ');
-
-      // FIX #7: 1-2 dígitos de día/mes, año de 2 o 4 dígitos — superconjunto
-      // estricto del regex anterior (\d{2}/\d{2}/\d{4}), sigue matcheando
-      // todo lo que matcheaba antes, más formatos con dígitos sin padding
-      // o año corto.
-      const dateMatch = allText.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
-      if (!dateMatch) {
-        // Diagnóstico: si alguna cita sigue sin reconocerse y no tenemos
-        // un ejemplo concreto del texto que falla, este log deja
-        // constancia en consola del contenido exacto de la anotación —
-        // la próxima vez que ocurra, revisa la consola del navegador
-        // para ver qué formato falta cubrir, en vez de adivinar.
-        if (allText) console.warn('[pdf.js] Anotación con fecha no reconocida:', JSON.stringify(allText));
-        continue;
-      }
-
-      let [, dd, mm, yy] = dateMatch;
-      dd = dd.padStart(2, '0');
-      mm = mm.padStart(2, '0');
-      if (yy.length === 2) yy = '20' + yy;
-      const fecha = `${dd}/${mm}/${yy}`;
-
-      // FIX (regresión): el timeMatch anterior buscaba en TODO allText,
-      // incluyendo los dígitos de la fecha ya capturada. Al aceptar
-      // espacio como separador de hora, un texto como
-      // "03/07/2026 08:00" podía matchear "26 08" (año + hora) ANTES de
-      // llegar al "08:00" real, produciendo horas inválidas (26:08 →
-      // normalizado a 00:09). Se acota la búsqueda al texto que viene
-      // DESPUÉS de la fecha — elimina el falso positivo sin perder la
-      // tolerancia al separador de espacio para el caso real.
-      const afterDate = allText.slice(dateMatch.index + dateMatch[0].length);
-      const timeMatch = afterDate.match(/(\d{1,2})[:.;\s]\s*(\d{2})(?![\/\-\d])/);
-
+      const allText   = parts.join(' ');
+      const dateMatch = allText.match(/(\d{2}[\/\-]\d{2}[\/\-]\d{4})/);
+      const timeMatch = allText.match(/(\d{1,2})[:.;]\s*(\d{2})(?![\/\-\d])/);
+      if (!dateMatch) continue;
+      const fecha = dateMatch[1].replace(/-/g, '/');
       let cita = fecha;
       if (timeMatch) {
         let h = parseInt(timeMatch[1], 10);
@@ -141,33 +145,52 @@ export async function pdfExtract(file) {
 }
 
 /**
+ * Agrega un marchamo candidato a los arreglos de salida, validando su
+ * formato de forma independiente al resto del bloque. Nunca lanza,
+ * nunca reutiliza un valor de otra posición — si es inválido, deja la
+ * posición vacía y registra el detalle crudo en `issues`.
+ * @private
+ * @param {string} raw — texto crudo capturado en esa posición
+ * @param {string[]} marchamos — arreglo de salida (mutado in-place)
+ * @param {Array<{raw:string}>} issues — arreglo de incidencias (mutado in-place)
+ */
+function _pushMarchamo(raw, marchamos, issues) {
+  const val = String(raw || '').trim();
+  if (!val) return; // posición no capturada — no es un "campo inválido", simplemente no había nada ahí
+  if (_isValidMarchamo(val)) {
+    marchamos.push(val);
+  } else {
+    marchamos.push('');
+    issues.push({ raw: val });
+  }
+}
+
+/**
  * Interpreta las líneas extraídas por pdfExtract() según el formato
  * específico de los PDFs de carga de Walmart CeDis, y produce un array
  * de rows estructurados — uno por cada destino/factura encontrado.
  *
- * Maneja tres casos de nombre de archivo:
+ * Maneja dos casos de nombre de archivo:
  *   - "12345.pdf"        → ruta única
- *   - "4102-2.pdf"        → ruta partida — sufijo con menos dígitos que
- *                            la ruta principal, se trata como UNA sola ruta
- *   - "12345-67890.pdf"  → PDF unificado de dos rutas (ambos grupos con
- *                            magnitud de dígitos similar) — se reparten
- *                            los destinos entre ambas
+ *   - "12345-67890.pdf"  → PDF unificado de dos rutas (se reparten
+ *                            los destinos entre ambas)
  *
  * @param {{ lines: Array, annots: Array }} extracted — salida de pdfExtract()
  * @param {string} filename — nombre original del archivo (para detectar ruta(s))
- * @returns {Array<{ ruta, operador, destino, factura, tarimas, marchamos, cita, hrDespacho }>}
+ * @returns {Array<{ ruta, operador, destino, factura, tarimas, marchamos,
+ *                    marchamoIssues, cita, hrDespacho }>}
+ *          marchamoIssues: Array<{raw:string}> — marchamos candidatos
+ *          detectados en el PDF que NO pasaron la validación de formato
+ *          y por lo tanto quedaron vacíos en `marchamos` — consumido por
+ *          features/validation/sve.js (regla 'bad_march') para reportar
+ *          la incidencia con el valor crudo, sin bloquear ni afectar el
+ *          resto de los campos de la misma entrega.
  */
 export function parsePDF({ lines, annots }, filename) {
   const baseName     = filename.replace(/\.pdf$/i, '').replace(/^\d+_/, '');
   const unifiedMatch = baseName.match(/^(\d+)-(\d+)$/);
-  // FIX #6: distingue "PDF unificado real" (dos rutas de magnitud similar,
-  // ej. "12345-67890") de "ruta partida" (ej. "4102-2", donde "2" es un
-  // sufijo de sub-ruta, no una segunda ruta completa). Heurística: si el
-  // segundo grupo tiene menos dígitos que el primero, es un sufijo de
-  // ruta partida — se trata baseName completo como una sola ruta.
-  const isSplitSuffix = !!unifiedMatch && unifiedMatch[2].length < unifiedMatch[1].length;
-  const isUnified      = !!unifiedMatch && !isSplitSuffix;
-  const rutas           = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName];
+  const isUnified    = !!unifiedMatch;
+  const rutas        = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName];
 
   let nombre = '', apellido = '', hrDespacho = '';
   for (const { text } of lines) {
@@ -179,22 +202,30 @@ export function parsePDF({ lines, annots }, filename) {
         let rawDate = fm[1].replace(/-/g, '/');
         const pts = rawDate.split('/');
         if (pts[2] && pts[2].length === 2) pts[2] = '20' + pts[2];
-        // FIX #4: el sello lo imprime Walmart en MM/DD/YYYY — se
-        // intercambian día y mes para que quede en DD/MM/YYYY, la
-        // convención del resto de la app. Guard defensivo: si el primer
-        // grupo no puede ser un mes válido (>12), se asume que el PDF ya
-        // viene en DD/MM/YYYY y no se invierte.
-        const mmVal = parseInt(pts[0], 10);
-        const swapped = (mmVal >= 1 && mmVal <= 12) ? `${pts[1]}/${pts[0]}/${pts[2]}` : pts.join('/');
-        hrDespacho = swapped + ' ' + fm[2];
+        // FIX: el sello del PDF viene en formato inglés MM/DD/YYYY
+        // (confirmado con muestra real: "07-26-2026" = 26 de julio de
+        // 2026) — se invierte aquí a DD/MM/YYYY, que es la convención
+        // que usa el resto de la app (normalizeAppointment/parseDateTime
+        // en utils/date.js). NO tocar sin volver a verificar el formato
+        // real del sello si cambia el proveedor/plantilla del PDF.
+        hrDespacho = `${pts[1]}/${pts[0]}/${pts[2]} ${fm[2]}`;
       }
     }
   }
   const operador = (nombre + ' ' + apellido).trim();
 
-  const ROW_RE  = /^CeDis\s+(?:TIENDA|HUB)\s+\S+\s+\d+\s+(4659\d{6})\s+(\d+)\s+\d+\s+\d+\s+\d+\s+[\d.]+\s+(\d{5,6})$/;
-  const CONT_RE = /^4659\s+(\w+)(?:\s+(\d{5,6}))?$/;
-  const MARC_RE = /^0?\d{5,6}$/;
+  // Los grupos de factura/tarimas se validan por su propia forma
+  // (4659xxxxxx / dígitos) — independientes entre sí. El grupo del
+  // marchamo de encabezado ahora es \S+ (cualquier token no vacío):
+  // reconoce la POSICIÓN del campo sin exigirle el formato todavía —
+  // la validación de formato se hace aparte en _pushMarchamo(). Así,
+  // un marchamo con longitud incorrecta ya NO impide capturar factura
+  // y tarimas, que son campos independientes y válidos.
+  const ROW_RE  = /^CeDis\s+(?:TIENDA|HUB)\s+\S+\s+\d+\s+(4659\d{6})\s+(\d+)\s+\d+\s+\d+\s+\d+\s+[\d.]+\s+(\S+)$/;
+  // Mismo criterio para el marchamo de continuación (grupo 2, opcional):
+  // \S+ en vez de \d{5,6} — el destino (grupo 1) siempre se captura
+  // aunque el marchamo que lo acompañe sea inválido.
+  const CONT_RE = /^4659\s+(\w+)(?:\s+(\S+))?$/;
   const STOP_RE = /^(Total de ordenes|Fin del informe|Walmart)/i;
   const DEST_RE = /^(?:TIENDA|HUB)\s+(\d+)\s+-\s+Zona horaria/i;
 
@@ -210,18 +241,35 @@ export function parsePDF({ lines, annots }, filename) {
   while (i < textLines.length) {
     const rm = textLines[i].match(ROW_RE);
     if (rm) {
-      const factura = rm[1], tarimas = rm[2], marchamos = [rm[3]];
+      const factura = rm[1], tarimas = rm[2];
+      const marchamos = [], marchamoIssues = [];
+
+      // Marchamo de encabezado — validado de forma independiente,
+      // nunca invalida factura/tarimas ya capturados arriba.
+      _pushMarchamo(rm[3], marchamos, marchamoIssues);
+
       let destino = ''; i++;
       if (i < textLines.length) {
         const cm = textLines[i].match(CONT_RE);
-        if (cm) { destino = cm[1]; if (cm[2]) marchamos.push(cm[2]); i++; }
+        if (cm) {
+          destino = cm[1];
+          if (cm[2]) _pushMarchamo(cm[2], marchamos, marchamoIssues);
+          i++;
+        }
       }
-      while (i < textLines.length) {
+      // Líneas de continuación con marchamos adicionales. Se usa un
+      // detector "candidato" amplio (MARC_CANDIDATE_RE) para decidir
+      // si la línea pertenece a este bloque de marchamos — la validez
+      // real de cada una se decide aparte en _pushMarchamo(), así que
+      // una línea con formato inválido NO corta la recolección de las
+      // siguientes líneas válidas que vengan después.
+      while (i < textLines.length && marchamos.length + marchamoIssues.length < MAX_MARCH_SLOTS) {
         const tl = textLines[i].trim();
         if (STOP_RE.test(tl)) break;
-        if (tl.match(MARC_RE)) { marchamos.push(tl); i++; } else break;
+        if (MARC_CANDIDATE_RE.test(tl)) { _pushMarchamo(tl, marchamos, marchamoIssues); i++; }
+        else break;
       }
-      rawRows.push({ factura, tarimas, marchamos, destino });
+      rawRows.push({ factura, tarimas, marchamos, marchamoIssues, destino });
     } else i++;
   }
 
@@ -235,18 +283,19 @@ export function parsePDF({ lines, annots }, filename) {
       rutas.forEach((ruta, idx) => {
         const grupo = grupos[idx] || [];
         if (!grupo.length) return;
-        const marchamos = [...new Set(grupo.flatMap(r => r.marchamos))];
+        const marchamos      = [...new Set(grupo.flatMap(r => r.marchamos))];
+        const marchamoIssues = grupo.flatMap(r => r.marchamoIssues || []);
         const tarimas   = String(grupo.reduce((s, r) => s + (parseInt(r.tarimas, 10) || 0), 0));
-        result.push({ ruta, operador, destino: grupo[0].destino, factura: grupo[0].factura, tarimas, marchamos, cita: '', hrDespacho });
+        result.push({ ruta, operador, destino: grupo[0].destino, factura: grupo[0].factura, tarimas, marchamos, marchamoIssues, cita: '', hrDespacho });
       });
     } else {
       for (const r of rawRows) {
-        result.push({ ruta: baseName, operador, destino: r.destino, factura: r.factura, tarimas: r.tarimas, marchamos: r.marchamos, cita: '', hrDespacho });
+        result.push({ ruta: baseName, operador, destino: r.destino, factura: r.factura, tarimas: r.tarimas, marchamos: r.marchamos, marchamoIssues: r.marchamoIssues || [], cita: '', hrDespacho });
       }
     }
   } else {
     for (const r of rawRows) {
-      result.push({ ruta: rutas[0], operador, destino: r.destino, factura: r.factura, tarimas: r.tarimas, marchamos: r.marchamos, cita: '', hrDespacho });
+      result.push({ ruta: rutas[0], operador, destino: r.destino, factura: r.factura, tarimas: r.tarimas, marchamos: r.marchamos, marchamoIssues: r.marchamoIssues || [], cita: '', hrDespacho });
     }
   }
 
