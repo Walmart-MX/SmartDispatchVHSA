@@ -46,6 +46,29 @@
  *   (agrupar/persistir incidencias) ocurre en processors/merge.js tras
  *   cada corrida, no aquí — este módulo solo LEE y resuelve.
  *
+ * CAMBIO (jul-2026 — confirmación de entregas sin PDF, "se quedó por
+ * ocupación"):
+ *   Se agrega confirmExcludedDette(ruta, dette) — contraparte de
+ *   quickFix()/addCatalogRow() para la nueva regla SVE 'dette_sin_pdf'
+ *   (ver features/validation/sve.js). El usuario confirma desde
+ *   Correcciones que una entrega sin ningún bloque de PDF no se va a
+ *   realizar; este método agrega la clave a State.excludedDettes y
+ *   dispara un nuevo merge — processors/merge.js filtra la fila por
+ *   completo (nunca llega a State.merged), así que el Excel final y el
+ *   historial de Supabase quedan automáticamente fieles a la decisión,
+ *   sin que este módulo (ni export.js ni dispatch-history.js) necesiten
+ *   ningún filtro adicional. La confirmación de seguridad (diálogo
+ *   nativo) vive en core/app.js, mismo patrón que deleteCatalogRow().
+ *
+ * CAMBIO (jul-2026 — regla SVE 'integrity'/K, descuento de exclusiones):
+ *   triggerMerge() ahora pasa State.excludedCount como tercer argumento
+ *   a runSVE() (ver features/validation/sve.js) — permite que la regla K
+ *   descuente del conteo esperado las entregas excluidas confirmadas en
+ *   ESTA corrida de runMerge() (ver processors/merge.js), evitando una
+ *   alerta crítica falsa cuando la diferencia se explica por completo
+ *   por una exclusión legítima (ej. DETTE cancelada y confirmada por el
+ *   usuario). No cambia ningún otro comportamiento de triggerMerge().
+ *
  * FIX DE INTEGRIDAD DE DATOS (jul-2026) — handlePDFs():
  *   Antes se indexaba SIEMPRE `ruta + '|' + r.factura` y
  *   `ruta + '|D|' + r.destino` en State.pdfData, aunque factura/destino
@@ -311,7 +334,12 @@ export const Events = {
     UI.setActionsEnabled(true);
     setTimeout(() => {
       const screenCount = State.xlsData ? State.xlsData.length : 0;
-      const sveResult = runSVE(State.merged, screenCount);
+      // CAMBIO (jul-2026): se pasa State.excludedCount (calculado en
+      // runMerge(), ver processors/merge.js) para que la regla K de
+      // sve.js pueda descontar las exclusiones confirmadas de ESTA
+      // corrida antes de comparar — ver nota de cabecera de este
+      // archivo y de features/validation/sve.js.
+      const sveResult = runSVE(State.merged, screenCount, State.excludedCount);
       if (sveResult) {
         State.sveIssues = sveResult.issues;
         UI.renderSVE(sveResult.issues, sveResult.quality, sveResult.nCrit, sveResult.nWarn, sveResult.nInfo, sveResult.nPass);
@@ -535,5 +563,29 @@ export const Events = {
       const resolved = await IncidentStore.listResolved();
       UI.renderResolvedIncidents(resolved);
     }
+  },
+
+  // ═══════════════════════════════════════════════════════════════
+  // ── ENTREGAS SIN PDF — confirmación de exclusión (jul-2026) ──
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Confirma que una entrega sin PDF NO se va a realizar (ej. se quedó
+   * por ocupación) — la agrega a State.excludedDettes y dispara un
+   * nuevo merge. La entrega desaparece POR COMPLETO de State.merged
+   * (ver processors/merge.js) y por lo tanto de la tabla, el SVE, el
+   * Excel exportado y el historial de Supabase — los tres leen
+   * State.merged directamente, no requieren ningún filtro adicional.
+   * La confirmación del usuario (diálogo nativo) vive en el listener
+   * del DOM (ver core/app.js), no aquí — mismo patrón que
+   * deleteCatalogRow()/resolveIncident(): Events recibe la decisión ya
+   * tomada y solo ejecuta el efecto.
+   * @param {string} ruta
+   * @param {string} dette
+   */
+  confirmExcludedDette(ruta, dette) {
+    if (!ruta || !dette) return;
+    State.excludedDettes.add(String(ruta).trim() + '||' + String(dette).trim());
+    Events.triggerMerge();
   }
 };

@@ -77,6 +77,64 @@
  *   _mcCoverage() reutiliza State.merged/State.catalogs ya en memoria —
  *   es un cálculo en vivo, no se persiste ni se pide a Supabase.
  *
+ * CAMBIO (jul-2026 — regla 'dette_sin_pdf' y tarjeta de confirmación):
+ *   Se agrega CONFIRM_RULES (Set) y _fixCardConfirm() — una tercera
+ *   variante de tarjeta en Correcciones, distinta de quick (input) y
+ *   review (abre drawer): esta pide una DECISIÓN binaria ("¿esta
+ *   entrega se va a realizar o no?") en vez de un valor de campo.
+ *   _buildFixBuckets() ahora devuelve un tercer bucket `confirm`, que
+ *   se suma al total de incidencias pendientes en renderFixList(),
+ *   renderQualityScreen() y showCelebrate() (los tres puntos que ya
+ *   calculaban `quick.length + review.length`). El botón "✓ No se
+ *   realizará" de la tarjeta dispara Events.confirmExcludedDette() (ver
+ *   core/app.js, listener de #fixList/#fixInfoList) — la eliminación
+ *   real de la fila ocurre en processors/merge.js, UI solo dispara la
+ *   acción y vuelve a pintar tras el resultado (mismo patrón que
+ *   EditSystem.quickFix()).
+ *
+ * CAMBIO (jul-2026 — botón "Continuar a Exportación" tricolor):
+ *   Se agrega _updateFixContinueBtn() — NUEVO. Pinta un botón fijo en
+ *   la cabecera de Correcciones (#btnFixContinue, ver index.html) cuyo
+ *   color/texto reflejan el estado real de las incidencias, reusando
+ *   exactamente el mismo criterio que ya gobierna exportGate/
+ *   renderExportScreen (State.sveHasCritical/sveHasWarnings) — ninguna
+ *   fuente de verdad nueva. Este botón NUNCA bloquea la navegación: el
+ *   gate real que impide exportar con críticos sigue viviendo en la
+ *   pantalla Exportación (renderSVE()/setActionsEnabled()), sin
+ *   cambios — su único propósito es que el usuario decida
+ *   conscientemente si continúa o vuelve a revisar. Se invoca desde
+ *   renderFixList(), que ya se llama en todos los momentos relevantes
+ *   (triggerMerge, _revalidateAfterEdit, resetAll) — no se agrega
+ *   ningún call-site nuevo.
+ *
+ * CAMBIO (jul-2026 — captura dinámica de hasta 5 marchamos):
+ *   La regla SVE 'no_march' ganaba antes una tarjeta "quick" genérica
+ *   con UN solo input (mapeado siempre a MARCHAMO 1) — insuficiente
+ *   ya que una entrega real puede traer hasta 5 marchamos. Se agrega:
+ *     - MULTI_RULES (Set) — reglas que necesitan MÁS de un campo
+ *       dinámico en vez de un input fijo. Hoy solo 'no_march'. Se
+ *       evalúa ANTES que QUICKFIX_RULES en _buildFixBuckets(), que
+ *       gana un cuarto bucket `multi`.
+ *     - _fixCardMarchamo(issue) — tarjeta nueva: arranca con 1 input,
+ *       botón "+ Agregar marchamo" revela más (hasta 5), cada uno con
+ *       su propio "✕" para quitarlo. Los slots ofrecidos
+ *       (MARCHAMO 1..5) se calculan a partir de State.merged en el
+ *       momento de renderizar — SOLO se ofrecen las posiciones que
+ *       están vacías en la fila real, nunca se sobreescribe un
+ *       marchamo que el PDF ya capturó correctamente en otra posición.
+ *     - El guardado usa EditSystem.quickFixMulti() (editing/edit-
+ *       system.js) — aplica varios campos a la vez con un solo
+ *       timestamp compartido, reutilizando applyFieldEdit() por cada
+ *       uno (misma auditoría/propagación que quickFix(), sin duplicar
+ *       lógica). Los inputs vacíos se ignoran por completo — nunca se
+ *       envían a applyFieldEdit(), consistente con "todos los campos
+ *       son opcionales".
+ *   La interacción de agregar/quitar filas y el listener del botón
+ *   "✓ Guardar" de esta tarjeta viven en core/app.js
+ *   (handleFixCardClick), mismo contenedor delegado que ya manejaba
+ *   las otras variantes de tarjeta — no se agrega ningún listener
+ *   nuevo al DOM.
+ *
  * Dependencias:
  *   - State (core/state.js)
  *   - escH (utils/dom.js)
@@ -126,12 +184,32 @@ let _tableSearch = '';
 // no llegan aquí — el filtro de severidad en _buildFixBuckets() las
 // excluye antes de clasificarlas. Ver features/validation/sve.js para
 // el porqué de cada field.
-const QUICKFIX_RULES = new Set(['missing', 'no_march', 'zero_tar', 'high_tar']);
+// CAMBIO (jul-2026): 'no_march' se RETIRA de este set — ahora vive en
+// MULTI_RULES (ver abajo) y se renderiza con _fixCardMarchamo(), no con
+// la tarjeta quick de un solo input. MULTI_RULES se evalúa ANTES que
+// este set en _buildFixBuckets(), así que aunque quedara aquí sería
+// código muerto — se retira por limpieza.
+const QUICKFIX_RULES = new Set(['missing', 'zero_tar', 'high_tar']);
+// Reglas que no piden un valor de campo sino una DECISIÓN — "¿confirmas
+// o revisas?" — NUEVO (jul-2026, ver sve.js regla 'dette_sin_pdf').
+// Renderizadas con _fixCardConfirm() en vez de quick/review. Se separan
+// de QUICKFIX_RULES/el resto de "review" porque ninguna de esas dos
+// tarjetas tiene sentido aquí: no hay un campo+valor que capturar
+// (quick) ni tampoco es simplemente "abrir el drawer y corregir a mano"
+// (review) — es una confirmación binaria que dispara la eliminación
+// completa de la entrega (ver events.js → confirmExcludedDette()).
+const CONFIRM_RULES = new Set(['dette_sin_pdf']);
+// Reglas que necesitan MÁS de un campo dinámico en vez de un input fijo
+// — NUEVO (jul-2026, captura de hasta 5 marchamos). Renderizadas con
+// _fixCardMarchamo() en vez de quick/review/confirm. Se evalúa ANTES
+// que QUICKFIX_RULES en _buildFixBuckets() — cualquier regla aquí nunca
+// llega a la clasificación quick, sin importar si también apareciera
+// en QUICKFIX_RULES por error.
+const MULTI_RULES = new Set(['no_march']);
 const QUICKFIX_FIELD_MAP = {
   'OPERADOR':   { key: 'OPERADOR',   label: 'Operador',   placeholder: 'Nombre del operador…' },
   'LIC.':       { key: '_LIC',       label: 'Licencia',   placeholder: 'Número de licencia…' },
   'TARIMAS':    { key: 'TARIMAS',    label: 'Tarimas',    placeholder: 'Cantidad de tarimas…' },
-  'MARCHAMO 1': { key: 'MARCHAMO 1', label: 'Marchamo 1', placeholder: 'Número de marchamo…' },
   'CITA':       { key: 'CITA',       label: 'Cita',       placeholder: 'DD/MM/AAAA HH:MM' },
 };
 // Calidad inicial de ESTA sesión de corrección (antes de cualquier
@@ -535,8 +613,8 @@ export const UI = {
     ringArc.style.strokeDashoffset = String(CIRC * (1 - quality / 100));
     if (ringNum) ringNum.textContent = quality + '%';
 
-    const { quick, review } = UI._buildFixBuckets();
-    const currentTotal = quick.length + review.length;
+    const { quick, review, confirm, multi } = UI._buildFixBuckets();
+    const currentTotal = quick.length + review.length + confirm.length + multi.length;
     const resolved = _fixPeakTotal !== null ? Math.max(0, _fixPeakTotal - currentTotal) : 0;
     const total = State.merged.length;
 
@@ -604,27 +682,35 @@ export const UI = {
 
   /**
    * Clasifica las incidencias accionables (CRÍTICA/ADVERTENCIA) de
-   * State.sveIssues en "corrección rápida" (un campo editable claro) vs
-   * "revisar" (todo lo demás — necesita el drawer completo). CITA
-   * (no_cita) es siempre INFORMATIVA — nunca entra en `quick`/`review`,
+   * State.sveIssues en "corrección rápida" (un campo editable claro),
+   * "múltiple" (varios campos dinámicos, ver MULTI_RULES), "confirmar"
+   * (una decisión binaria, ver CONFIRM_RULES) o "revisar" (todo lo
+   * demás — necesita el drawer completo). CITA (no_cita) es siempre
+   * INFORMATIVA — nunca entra en `quick`/`multi`/`review`/`confirm`,
    * se devuelve aparte en `info` y no cuenta para el contador de
    * "incidencias pendientes" (decisión confirmada con EduarDo).
    * Desde jul-2026, no_ventana/no_pool también son INFORMATIVA (ver
-   * sve.js) y por lo tanto tampoco entran a `quick`/`review` — el
-   * filtro de severidad las excluye automáticamente aquí, sin lógica
-   * adicional.
+   * sve.js) y por lo tanto tampoco entran a estos buckets — el filtro
+   * de severidad las excluye automáticamente aquí, sin lógica adicional.
+   *
+   * ORDEN DE EVALUACIÓN (importa): CONFIRM_RULES → MULTI_RULES →
+   * QUICKFIX_RULES → review (todo lo demás). 'no_march' se evalúa en
+   * MULTI_RULES ANTES de llegar al chequeo de QUICKFIX_RULES — ver
+   * nota de cabecera "CAMBIO (jul-2026 — captura dinámica...)".
    * @private
    */
   _buildFixBuckets() {
     const issues = State.sveIssues || [];
-    const quick = [], review = [];
+    const quick = [], review = [], confirm = [], multi = [];
     issues.forEach(issue => {
       if (issue.sev !== SVE_CRIT && issue.sev !== SVE_WARN) return;
+      if (CONFIRM_RULES.has(issue.rule)) { confirm.push(issue); return; }
+      if (MULTI_RULES.has(issue.rule) && issue.rowIds && issue.rowIds.length) { multi.push(issue); return; }
       const canQuickFix = QUICKFIX_RULES.has(issue.rule) && QUICKFIX_FIELD_MAP[issue.field] && issue.rowIds && issue.rowIds.length;
       (canQuickFix ? quick : review).push(issue);
     });
     const info = issues.filter(i => i.rule === 'no_cita');
-    return { quick, review, info };
+    return { quick, review, confirm, multi, info };
   },
 
   /** Tarjeta de corrección rápida — input inline + Guardar. @private */
@@ -659,6 +745,121 @@ export const UI = {
       </div>`;
   },
 
+  /**
+   * Tarjeta "confirmar exclusión" — NUEVO (jul-2026, ver sve.js regla
+   * 'dette_sin_pdf'). La entrega no tiene NINGÚN bloque de PDF y
+   * probablemente no se va a realizar (ej. se quedó por ocupación).
+   * Dos acciones:
+   *   - "✓ No se realizará" → dispara Events.confirmExcludedDette(),
+   *     que elimina la fila POR COMPLETO de State.merged (y por lo
+   *     tanto del Excel final y del historial de Supabase — ver
+   *     processors/merge.js). El listener real y su confirm() de
+   *     seguridad viven en core/app.js (mismo patrón que el resto de
+   *     los botones de #fixList).
+   *   - "🔍 Revisar" → abre el drawer completo, por si el usuario
+   *     prefiere verificar manualmente antes de decidir.
+   * @private
+   */
+  _fixCardConfirm(issue) {
+    const dette  = issue.dette ? `<div class="fix-dette">Entrega ${escH(issue.dette)}</div>` : '';
+    const rowIds = escH(JSON.stringify(issue.rowIds || []));
+    return `
+      <div class="fix-card warn fix-card-confirm">
+        <div class="fix-ruta">${escH(issue.ruta || '—')}${dette}</div>
+        <div class="fix-field-info"><div class="fix-field-label">Sin PDF</div><div class="fix-field-desc">${escH(issue.desc)}</div></div>
+        <div class="fix-input-wrap"></div>
+        <button class="fix-confirm-btn" data-confirm-ruta="${escH(issue.ruta)}" data-confirm-dette="${escH(issue.dette)}">✓ No se realizará</button>
+        <button class="fix-review-btn" data-locate-ruta="${escH(issue.ruta)}" data-locate-field="${escH(issue.field)}" data-locate-ids="${rowIds}">🔍 Revisar</button>
+      </div>`;
+  },
+
+  /**
+   * Tarjeta de captura dinámica de marchamos — NUEVO (jul-2026, ver
+   * nota de cabecera "CAMBIO (jul-2026 — captura dinámica...)"). A
+   * diferencia de _fixCardQuick(), no mapea a un único campo fijo:
+   * arranca con un input y permite agregar hasta 5 (uno por cada
+   * posición MARCHAMO 1-5 que esté realmente vacía en la fila).
+   *
+   * Los slots ofrecidos se calculan a partir de la fila real en
+   * State.merged (rowIds[0] — todas las filas del grupo comparten la
+   * misma entrega física, ver merge.js) — SOLO se ofrecen posiciones
+   * vacías, nunca se le da al usuario la opción de sobreescribir un
+   * marchamo que el PDF ya extrajo correctamente en otra posición
+   * (ej. MARCHAMO 1 vacío pero MARCHAMO 2 ya tiene dato válido).
+   *
+   * data-fix-slots guarda el orden completo de slots disponibles (JSON)
+   * — el botón "+ Agregar marchamo" (ver core/app.js →
+   * handleFixCardClick) lo usa para saber cuál es el siguiente campo a
+   * revelar, sin necesidad de volver a consultar State.
+   * @private
+   */
+  _fixCardMarchamo(issue) {
+    const dette   = issue.dette ? `<div class="fix-dette">Entrega ${escH(issue.dette)}</div>` : '';
+    const rowIds  = issue.rowIds || [];
+    const rowIdsAttr = escH(JSON.stringify(rowIds));
+
+    const sampleRow = rowIds.length ? State.merged.find(r => r._rowId === rowIds[0]) : null;
+    const emptySlots = [];
+    for (let m = 1; m <= 5; m++) {
+      const key = 'MARCHAMO ' + m;
+      if (!sampleRow || !String(sampleRow[key] || '').trim()) emptySlots.push(key);
+    }
+    // Respaldo — la regla no_march exige MARCHAMO 1 vacío, así que
+    // emptySlots nunca debería quedar vacío, pero por robustez nunca
+    // se deja la tarjeta sin al menos un campo capturable.
+    if (!emptySlots.length) emptySlots.push('MARCHAMO 1');
+
+    const firstSlot = emptySlots[0];
+    return `
+      <div class="fix-card warn fix-card-marchamo" data-fix-rowids="${rowIdsAttr}" data-fix-slots="${escH(JSON.stringify(emptySlots))}">
+        <div class="fix-ruta">${escH(issue.ruta || '—')}${dette}</div>
+        <div class="fix-field-info"><div class="fix-field-label">Marchamos</div><div class="fix-field-desc">${escH(issue.desc)}</div></div>
+        <div class="fix-marchamo-wrap">
+          <div class="fix-marchamo-rows" data-fix-role="rows">
+            <div class="fix-marchamo-row" data-slot="${escH(firstSlot)}">
+              <input class="fix-input fix-marchamo-input" data-field="${escH(firstSlot)}" placeholder="Número de marchamo…">
+            </div>
+          </div>
+          ${emptySlots.length > 1 ? `<button type="button" class="fix-marchamo-add" data-fix-role="add-marchamo">+ Agregar marchamo</button>` : ''}
+        </div>
+        <button type="button" class="fix-save-marchamo" data-fix-role="save-marchamo">✓ Guardar</button>
+      </div>`;
+  },
+
+  /**
+   * Actualiza color y texto del botón "Continuar a Exportación" de
+   * Correcciones — NUEVO (jul-2026). Reutiliza exactamente el mismo
+   * criterio que ya gobierna exportGate/renderExportScreen
+   * (State.sveHasCritical/sveHasWarnings) — ninguna fuente de verdad
+   * nueva. Este botón NUNCA bloquea la navegación: el gate real que
+   * impide exportar con críticos sigue viviendo en la pantalla
+   * Exportación (renderSVE()/setActionsEnabled()), sin cambios. Su
+   * único propósito es que el usuario decida conscientemente si
+   * continúa o vuelve a revisar.
+   * @private
+   */
+  _updateFixContinueBtn() {
+    const btn = document.getElementById('btnFixContinue');
+    if (!btn) return;
+    if (!State.merged.length) {
+      btn.className = 'fix-continue-btn ok';
+      btn.disabled  = true;
+      btn.textContent = 'Continuar a Exportación →';
+      return;
+    }
+    btn.disabled = false;
+    if (State.sveHasCritical) {
+      btn.className   = 'fix-continue-btn crit';
+      btn.textContent = '⚠ Continuar a Exportación (pendientes críticos) →';
+    } else if (State.sveHasWarnings) {
+      btn.className   = 'fix-continue-btn warn';
+      btn.textContent = '⚠ Continuar a Exportación (con advertencias) →';
+    } else {
+      btn.className   = 'fix-continue-btn ok';
+      btn.textContent = '✓ Continuar a Exportación →';
+    }
+  },
+
   /** Pinta la pantalla completa de Correcciones — contador, barra de progreso, lista de tarjetas y la sección aparte de Cita. */
   renderFixList() {
     const list      = document.getElementById('fixList');
@@ -671,6 +872,11 @@ export const UI = {
     const infoWrap  = document.getElementById('fixInfoSection');
     const infoList  = document.getElementById('fixInfoList');
     if (!list || !counter || !progress) return;
+
+    // NUEVO (jul-2026) — ver nota de cabecera. Se actualiza en cada
+    // paso por este método (cubre triggerMerge, _revalidateAfterEdit,
+    // resetAll — todos los puntos que ya llaman renderFixList()).
+    UI._updateFixContinueBtn();
 
     const { ok } = Events ? Events.checkSources() : { ok: true };
 
@@ -687,8 +893,8 @@ export const UI = {
       return;
     }
 
-    const { quick, review, info } = UI._buildFixBuckets();
-    const total = quick.length + review.length;
+    const { quick, review, confirm, multi, info } = UI._buildFixBuckets();
+    const total = quick.length + review.length + confirm.length + multi.length;
 
     if (_fixPeakTotal === null || total > _fixPeakTotal) _fixPeakTotal = total;
     const pct = _fixPeakTotal > 0 ? Math.round((1 - total / _fixPeakTotal) * 100) : (total === 0 ? 100 : 0);
@@ -705,7 +911,10 @@ export const UI = {
       if (emptySub) emptySub.textContent = 'Ya no quedan incidencias pendientes — continúa al Dashboard de Calidad.';
     } else {
       empty.classList.remove('show');
-      list.innerHTML = quick.map(i => UI._fixCardQuick(i)).join('') + review.map(i => UI._fixCardReview(i)).join('');
+      list.innerHTML = quick.map(i => UI._fixCardQuick(i)).join('')
+        + multi.map(i => UI._fixCardMarchamo(i)).join('')
+        + confirm.map(i => UI._fixCardConfirm(i)).join('')
+        + review.map(i => UI._fixCardReview(i)).join('');
     }
 
     if (infoWrap) {
@@ -898,8 +1107,8 @@ export const UI = {
     const overlay = document.getElementById('celebrateOverlay');
     if (!overlay) return;
     const total = State.merged.length;
-    const { quick, review } = UI._buildFixBuckets();
-    const currentTotal = quick.length + review.length;
+    const { quick, review, confirm, multi } = UI._buildFixBuckets();
+    const currentTotal = quick.length + review.length + confirm.length + multi.length;
     const resolved = _fixPeakTotal !== null ? Math.max(0, _fixPeakTotal - currentTotal) : 0;
 
     const rutasEl = document.getElementById('celebrateRutas');
@@ -1345,6 +1554,8 @@ export const UI = {
     State.factData = new Map();
     State.despData = new Map();
     State.wtmsData = new Map();   // FIX: faltaba en el reset original — bug latente desde que se agregó WTMS
+    State.excludedDettes = new Set();
+    State.excludedCount  = 0;
     State.merged   = [];
     State.sveIssues = [];
     State.sveHasCritical = false;

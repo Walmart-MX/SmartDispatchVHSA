@@ -23,6 +23,23 @@
  *        de inmediato si la corrección resolvió o no la incidencia,
  *        sin esperar a la siguiente acción del usuario.
  *
+ * CAMBIO (jul-2026 — regla SVE 'integrity'/K, descuento de exclusiones):
+ *   _revalidateAfterEdit() ahora pasa State.excludedCount como tercer
+ *   argumento a runSVE() (ver features/validation/sve.js), igual que
+ *   Events.triggerMerge() (ver events.js). State.excludedCount ya está
+ *   actualizado por la corrida de runMerge() más reciente —
+ *   _revalidateAfterEdit() solo re-valida tras una edición, no vuelve
+ *   a correr el merge, así que lee el valor correcto sin necesidad de
+ *   recalcularlo aquí.
+ *
+ * CAMBIO (jul-2026 — captura dinámica de hasta 5 marchamos):
+ *   Se agrega quickFixMulti(rowIds, fields) — hermano de quickFix()
+ *   pero aplica VARIOS campos a la vez con un timestamp compartido
+ *   (ver ui.js → _fixCardMarchamo()/MULTI_RULES). Reutiliza
+ *   applyFieldEdit() por cada campo, así que la propagación de
+ *   licencia y el recálculo de _wtmsAmbiguous (si aplicaran) siguen
+ *   siendo el único lugar que los define — sin duplicar lógica.
+ *
  * Dependencias:
  *   - State (core/state.js)
  *   - escH (utils/dom.js)
@@ -106,8 +123,13 @@ export const EditSystem = {
       tableRows[idx].scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
-    const rutaVal = String(row['RUTA']||'').trim();
-    document.getElementById('editDrawerRuta').textContent = 'Ruta ' + rutaVal;
+    const rutaVal  = String(row['RUTA']||'').trim();
+// NUEVO (jul-2026): row['DETTE'] viene intacto del Excel (merge.js hace
+// nr = {...row, ...}), no requiere getMapped ni import nuevo. Se agrega
+// al mismo badge existente — sin tocar index.html ni ningún otro caller.
+const detteVal = String(row['DETTE']||'').trim();
+document.getElementById('editDrawerRuta').textContent =
+  'Ruta ' + rutaVal + (detteVal ? ' · Entrega ' + detteVal : '');
     document.getElementById('editChangeBadge').style.display = 'none';
 
     const critFields = new Set(
@@ -253,7 +275,10 @@ export const EditSystem = {
     UI.updateStats();
 
     const screenCount = State.xlsData ? State.xlsData.length : 0;
-    const sveResult = runSVE(State.merged, screenCount);
+    // CAMBIO (jul-2026): se pasa State.excludedCount, igual que
+    // Events.triggerMerge() — ver nota de cabecera de este archivo y
+    // de features/validation/sve.js (regla K).
+    const sveResult = runSVE(State.merged, screenCount, State.excludedCount);
     if (sveResult) {
       State.sveIssues = sveResult.issues;
       UI.renderSVE(sveResult.issues, sveResult.quality, sveResult.nCrit, sveResult.nWarn, sveResult.nInfo, sveResult.nPass);
@@ -285,6 +310,37 @@ export const EditSystem = {
     const applied = EditSystem.applyFieldEdit(rowIds, field, val);
     if (applied) EditSystem._revalidateAfterEdit();
     return applied;
+  },
+
+  /**
+   * Punto de entrada de la tarjeta de "corrección múltiple" en
+   * Correcciones — NUEVO (jul-2026, captura dinámica de hasta 5
+   * marchamos, ver ui.js → _fixCardMarchamo()/MULTI_RULES). Hermano de
+   * quickFix(), pero aplica VARIOS campos a la vez con un solo
+   * timestamp compartido — reutiliza applyFieldEdit() por cada campo,
+   * sin duplicar la lógica de propagación/auditoría que ya vive ahí.
+   *
+   * Campos vacíos se ignoran por completo (nunca llegan a
+   * applyFieldEdit) — consistente con "todos los campos son
+   * opcionales" del requerimiento de captura de marchamos. Solo se
+   * revalida una vez al final, aunque se hayan aplicado varios campos.
+   *
+   * @param {string[]} rowIds — _rowId de las filas a editar
+   * @param {Object<string,string>} fields — { 'MARCHAMO 1': '12345', 'MARCHAMO 2': '67890', ... }
+   *   claves = nombre de campo en State.merged, valores = texto capturado por el usuario
+   * @returns {boolean} true si se aplicó al menos un cambio real
+   */
+  quickFixMulti(rowIds, fields) {
+    const ts = new Date().toLocaleString('es-MX');
+    let appliedAny = false;
+    Object.entries(fields || {}).forEach(([field, rawVal]) => {
+      const val = String(rawVal || '').trim();
+      if (!val) return; // campo vacío — se ignora, nunca se envía a applyFieldEdit
+      const applied = EditSystem.applyFieldEdit(rowIds, field, val, { ts });
+      if (applied) appliedAny = true;
+    });
+    if (appliedAny) EditSystem._revalidateAfterEdit();
+    return appliedAny;
   },
 
   saveAndRevalidate() {

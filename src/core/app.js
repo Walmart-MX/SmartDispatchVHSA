@@ -48,6 +48,64 @@
  *   sobre #mcOpenTbody, mismo patrón que #catTbody/#mainTbody) y
  *   mostrar/ocultar el histórico de resueltas (#btnMcToggleResolved).
  *
+ * CAMBIO (jul-2026 — confirmación de entregas sin PDF, "se quedó por
+ * ocupación"):
+ *   handleFixCardClick() gana un manejo nuevo, ANTES del de
+ *   saveBtn/reviewBtn: el botón ".fix-confirm-btn" que
+ *   UI._fixCardConfirm() genera para la regla SVE 'dette_sin_pdf' (ver
+ *   sve.js). Pide confirmación explícita vía diálogo nativo (la acción
+ *   es irreversible una vez exportado: elimina la fila por completo
+ *   del Excel final y del historial de Supabase — ver
+ *   processors/merge.js) y, si se confirma, delega en
+ *   Events.confirmExcludedDette(ruta, dette). Mismo contenedor
+ *   (#fixList/#fixInfoList) y mismo listener delegado que ya existía —
+ *   no se agrega ningún listener nuevo al DOM, solo una rama más
+ *   dentro del handler compartido.
+ *
+ * CAMBIO (jul-2026 — botón "Continuar a Exportación" tricolor):
+ *   Se agrega el listener de #btnFixContinue (ver index.html/ui.js) —
+ *   navega a la pantalla Exportación con goStep('export'), mismo
+ *   mecanismo que btnGoQuality/btnGoTable. El color/estado del botón
+ *   ya lo gobierna UI._updateFixContinueBtn() (llamado desde
+ *   renderFixList()); este listener solo maneja la navegación, nunca
+ *   bloquea el click — el gate real de exportación sigue viviendo,
+ *   sin cambios, en la pantalla Exportación.
+ *
+ * CAMBIO (jul-2026 — captura dinámica de hasta 5 marchamos):
+ *   handleFixCardClick() gana tres manejos nuevos para la tarjeta
+ *   .fix-card-marchamo (ver ui.js → _fixCardMarchamo()/MULTI_RULES):
+ *   "+ Agregar marchamo" (revela el siguiente input, hasta el máximo
+ *   de slots vacíos que trae la tarjeta en data-fix-slots), "✕" por
+ *   fila agregada (la quita y reactiva el botón de agregar si estaba
+ *   deshabilitado por haber llegado al máximo), y "✓ Guardar" (junta
+ *   los valores no vacíos de todos los inputs de la tarjeta y llama a
+ *   EditSystem.quickFixMulti()). Los tres viven en el mismo listener
+ *   delegado que ya existía sobre #fixList/#fixInfoList — ningún
+ *   listener nuevo agregado al DOM. Deliberadamente usan clases CSS
+ *   propias (.fix-marchamo-add/.fix-marchamo-remove/.fix-save-
+ *   marchamo) distintas de .fix-save/.fix-review-btn para no colisionar
+ *   con los checks existentes de esas clases más abajo en el mismo
+ *   handler.
+ *
+ * CAMBIO (jul-2026 — simplificación del flujo, Etapa 4):
+ *   Ver nota completa junto a STEPS más abajo. Tres ajustes de
+ *   navegación, ninguno de lógica de negocio:
+ *     1) El botón de Preparación (id conservado: btnGoTable — el
+ *        nombre ya no describe su destino, se documenta aquí en vez de
+ *        renombrarlo para minimizar el diff) ahora navega a
+ *        goStep('fix') en vez de goStep('table') — el flujo diario
+ *        pasa directo de Preparación a Correcciones.
+ *     2) El listener de #adminNav gana un chequeo ANTES del toggle de
+ *        paneles: cualquier botón con [data-admin-goto] navega
+ *        directamente a esa pantalla (goStep) en vez de activar un
+ *        sub-panel de Administración — usado por el nuevo acceso
+ *        directo a Mesa de Trabajo.
+ *     3) Se agrega el listener de #btnGoQualityHeader — mismo destino
+ *        (goStep('quality')) que el #btnGoQuality ya existente dentro
+ *        del estado vacío de Correcciones; ahora también accesible
+ *        siempre, desde la cabecera, sin esperar a que no queden
+ *        incidencias pendientes.
+ *
  * Dependencias: todos los módulos de la aplicación.
  */
 import { State } from './state.js';
@@ -62,11 +120,31 @@ import { DispatchHistory } from '../features/dispatch-history.js';
 import { CatalogStore } from '../features/catalogs/catalog-store.js';
 
 // ── Stepper — navegación entre pantallas ──
+// CAMBIO (jul-2026 — simplificación del flujo, Etapa 4): STEPS baja de
+// 5 a 3 entradas tras varios meses de uso real. Mesa de Trabajo y
+// Calidad NO se eliminan — siguen siendo pantallas completas y
+// funcionales (ver data-screen="table"/"quality" en index.html,
+// goStep() sigue aceptando cualquier id) — solo salen del indicador
+// numerado porque en el día a día no aportaban un paso obligatorio:
+//   - Mesa de Trabajo: útil para buscar/editar CUALQUIER registro,
+//     incluso uno sin incidencias, pero eso es una tarea ocasional, no
+//     parte del flujo diario. Ahora se accede desde Administración
+//     (ver adminNav más abajo, botón con data-admin-goto="table").
+//   - Calidad: sus métricas siguen siendo útiles como diagnóstico,
+//     pero el Dashboard es redundante con el contador/progreso de
+//     Correcciones para la decisión diaria de "¿ya puedo exportar?"
+//     — esa decisión ahora la resuelve el botón tricolor "Continuar a
+//     Exportación" (ver ui.js → _updateFixContinueBtn(), Etapa 2).
+//     Se agrega un acceso siempre visible "📊 Ver detalle de calidad"
+//     en la cabecera de Correcciones (#btnGoQualityHeader) para quien
+//     sí quiera profundizar.
+// goStep()/renderStepper() NO cambian de comportamiento — goStep(id)
+// ya toleraba ids fuera de STEPS (el indicador simplemente no se
+// mueve), así que navegar a 'table'/'quality' sigue funcionando
+// exactamente igual que antes.
 const STEPS = [
   { id: 'prep',    label: 'Preparación' },
-  { id: 'table',   label: 'Mesa de Trabajo' },
   { id: 'fix',     label: 'Correcciones' },
-  { id: 'quality', label: 'Calidad' },
   { id: 'export',  label: 'Exportación' },
 ];
 let currentStepIdx = 0;
@@ -170,7 +248,13 @@ export async function init() {
   Events.setupDrop('dropWTMS', 'fileWTMS', Events.handleWTMS.bind(Events));
 
   // ── Preparación — "Continuar" y "Reemplazar archivos" (vista contraída) ──
-  document.getElementById('btnGoTable').addEventListener('click', () => goStep('table'));
+  // CAMBIO (jul-2026 — Etapa 4): navega directo a Correcciones
+  // (goStep('fix')) en vez de a Mesa de Trabajo — ver nota de cabecera
+  // "CAMBIO (jul-2026 — simplificación del flujo, Etapa 4)". El id del
+  // botón se conserva (btnGoTable) para no tocar index.html más de lo
+  // necesario; su texto visible ya se actualizó ahí a "Continuar a
+  // Correcciones →".
+  document.getElementById('btnGoTable').addEventListener('click', () => goStep('fix'));
   document.getElementById('btnPrepReset').addEventListener('click', () => UI.resetAll());
 
   // ── Status de despacho (paste) ──
@@ -222,8 +306,76 @@ export async function init() {
   const btnGoFix = document.getElementById('btnGoFix');
   if (btnGoFix) btnGoFix.addEventListener('click', () => goStep('fix'));
 
-  // ── Correcciones — tarjetas de corrección rápida y "Revisar" ──
+  // ── Correcciones — tarjetas de corrección rápida, confirmación y "Revisar" ──
   const handleFixCardClick = e => {
+    // NUEVO (jul-2026) — ver nota de cabecera "CAMBIO (jul-2026 —
+    // confirmación de entregas sin PDF...)". Debe ir ANTES del check de
+    // saveBtn: .fix-confirm-btn vive en la misma tarjeta que
+    // .fix-review-btn (ver ui.js → _fixCardConfirm()), así que el orden
+    // de los closest() importa para no confundirlos.
+    const confirmBtn = e.target.closest('.fix-confirm-btn');
+    if (confirmBtn) {
+      const ruta  = confirmBtn.dataset.confirmRuta;
+      const dette = confirmBtn.dataset.confirmDette;
+      if (!confirm(`¿Confirmas que la entrega ${dette || '—'} de la ruta ${ruta} NO se realizará?\n\nSe eliminará por completo del archivo final y del historial de Supabase — esta acción no se puede deshacer una vez exportado el día.`)) return;
+      Events.confirmExcludedDette(ruta, dette);
+      return;
+    }
+    // NUEVO (jul-2026) — ver nota de cabecera "CAMBIO (jul-2026 —
+    // captura dinámica de hasta 5 marchamos)". Los tres checks de la
+    // tarjeta .fix-card-marchamo van ANTES de .fix-save/.fix-review-btn
+    // por prolijidad, aunque no colisionan (clases CSS distintas).
+    const addMarchBtn = e.target.closest('[data-fix-role="add-marchamo"]');
+    if (addMarchBtn) {
+      const card     = addMarchBtn.closest('.fix-card-marchamo');
+      const rowsWrap = card.querySelector('[data-fix-role="rows"]');
+      const slots    = JSON.parse(card.dataset.fixSlots || '[]');
+      const current  = rowsWrap.querySelectorAll('.fix-marchamo-row').length;
+      if (current >= slots.length) return; // ya se alcanzó el máximo de slots vacíos disponibles
+      const nextSlot = slots[current];
+      const row = document.createElement('div');
+      row.className = 'fix-marchamo-row';
+      row.dataset.slot = nextSlot;
+      row.innerHTML =
+        `<input class="fix-input fix-marchamo-input" data-field="${nextSlot}" placeholder="Número de marchamo…">` +
+        `<button type="button" class="fix-marchamo-remove" data-fix-role="remove-marchamo">✕</button>`;
+      rowsWrap.appendChild(row);
+      row.querySelector('input').focus();
+      if (current + 1 >= slots.length) addMarchBtn.disabled = true;
+      return;
+    }
+    const removeMarchBtn = e.target.closest('[data-fix-role="remove-marchamo"]');
+    if (removeMarchBtn) {
+      const card = removeMarchBtn.closest('.fix-card-marchamo');
+      removeMarchBtn.closest('.fix-marchamo-row').remove();
+      // Al liberar un slot, el botón "+ Agregar" (si estaba
+      // deshabilitado por haber llegado al máximo) vuelve a habilitarse.
+      const addBtn = card.querySelector('[data-fix-role="add-marchamo"]');
+      if (addBtn) addBtn.disabled = false;
+      return;
+    }
+    const saveMarchBtn = e.target.closest('[data-fix-role="save-marchamo"]');
+    if (saveMarchBtn) {
+      const card   = saveMarchBtn.closest('.fix-card-marchamo');
+      const inputs = card.querySelectorAll('.fix-marchamo-input');
+      const fields = {};
+      inputs.forEach(inp => {
+        const val = inp.value.trim();
+        if (val) fields[inp.dataset.field] = val;
+      });
+      if (!Object.keys(fields).length) {
+        // Ningún campo capturado — no hay nada que guardar. Se marca el
+        // primer input como pista visual (mismo patrón que fix-input-
+        // error de la tarjeta quick), sin bloquear ni exigir un mínimo:
+        // los campos siguen siendo opcionales, esto es solo feedback.
+        const first = card.querySelector('.fix-marchamo-input');
+        if (first) { first.focus(); first.classList.add('fix-input-error'); }
+        return;
+      }
+      const rowIds = JSON.parse(card.dataset.fixRowids || '[]');
+      EditSystem.quickFixMulti(rowIds, fields);
+      return;
+    }
     const saveBtn = e.target.closest('.fix-save');
     if (saveBtn) {
       const card  = saveBtn.closest('.fix-card');
@@ -245,6 +397,19 @@ export async function init() {
   const btnGoQuality = document.getElementById('btnGoQuality');
   if (btnGoQuality) btnGoQuality.addEventListener('click', () => goStep('quality'));
 
+  // ── Correcciones — acceso SIEMPRE visible a Calidad desde la
+  // cabecera (NUEVO, jul-2026 — Etapa 4). Mismo destino que
+  // #btnGoQuality de arriba, pero sin esperar a que no queden
+  // incidencias pendientes — ver nota de cabecera "CAMBIO (jul-2026 —
+  // simplificación del flujo, Etapa 4)". ──
+  document.getElementById('btnGoQualityHeader')?.addEventListener('click', () => goStep('quality'));
+
+  // ── Correcciones — "Continuar a Exportación" tricolor (NUEVO, jul-2026) ──
+  // Ver nota de cabecera. Nunca bloquea la navegación — solo informa el
+  // estado; el gate real de exportación sigue viviendo en la pantalla
+  // Exportación, sin cambios.
+  document.getElementById('btnFixContinue')?.addEventListener('click', () => goStep('export'));
+
   // ── Exportación — modal de celebración ──
   document.getElementById('btnCelebrateClose')?.addEventListener('click', () => {
     UI.hideCelebrate();
@@ -257,6 +422,15 @@ export async function init() {
   // .cat-toggle y las pestañas .ref-tabs de las fases anteriores — ver
   // nota de cabecera. ──
   document.getElementById('adminNav').addEventListener('click', e => {
+    // NUEVO (jul-2026 — Etapa 4): botones con [data-admin-goto] son
+    // ACCESOS DIRECTOS a otra pantalla completa (ej. Mesa de Trabajo),
+    // no un sub-panel de Administración — se resuelven ANTES del
+    // toggle genérico de abajo, que asume que todo botón de esta barra
+    // activa un .admin-panel dentro de la misma pantalla. Ver nota de
+    // cabecera "CAMBIO (jul-2026 — simplificación del flujo, Etapa 4)".
+    const gotoBtn = e.target.closest('[data-admin-goto]');
+    if (gotoBtn) { goStep(gotoBtn.dataset.adminGoto); return; }
+
     const btn = e.target.closest('.admin-nav-item');
     if (!btn) return;
     document.querySelectorAll('.admin-nav-item').forEach(b => b.classList.toggle('active', b === btn));

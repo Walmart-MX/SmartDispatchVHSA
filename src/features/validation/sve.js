@@ -1,6 +1,6 @@
 /**
  * features/validation/sve.js
- * SMART VALIDATION ENGINE v1.3 — audita State.merged tras cada merge
+ * SMART VALIDATION ENGINE v1.4 — audita State.merged tras cada merge
  * y produce un reporte de incidencias (críticas, advertencias, informativas)
  * más un score de calidad 0-100.
  *
@@ -41,7 +41,7 @@
  *   screenCount) recibe el conteo como PARÁMETRO — ver detalle abajo en
  *   la regla K.
  *
- * CAMBIO (integridad de datos — jul-2026, "bug del marchamo heredado"):
+ * CAMBIO (jul-2026 — integridad de datos, "bug del marchamo heredado"):
  *   Se detectó que un marchamo con formato inválido en el PDF podía
  *   provocar que la entrega heredara marchamo Y factura de OTRA entrega
  *   de la misma ruta (ver processors/merge.js y processors/pdf.js para
@@ -63,9 +63,10 @@
  *   2) Regla nueva 'pdf_ambiguous' (CRÍTICA) — cubre el caso distinto de
  *      "no se pudo localizar NINGÚN bloque de PDF con certeza para esta
  *      entrega" (más de un bloque candidato en la misma ruta, sin match
- *      específico por factura/DETTE). A diferencia de bad_march, aquí
- *      no hay un campo puntual que validar — es la entrega COMPLETA la
- *      que quedó sin datos de PDF, por diseño (merge.js nunca adivina
+ *      específico por factura/DETTE, Y el DETTE de esta fila sí aparece
+ *      entre los destinos de esos bloques). A diferencia de bad_march,
+ *      aquí no hay un campo puntual que validar — es la entrega COMPLETA
+ *      la que quedó sin datos de PDF, por diseño (merge.js nunca adivina
  *      entre candidatos ambiguos). Se excluye de la regla H (no_pdf)
  *      para no duplicar el aviso con un mensaje menos preciso.
  *
@@ -107,6 +108,49 @@
  *   cat_dup, es un cambio de una línea (SVE_WARN → SVE_INFO) — avísame
  *   y lo aplico igual que aquí.
  *
+ * CAMBIO (jul-2026 — nueva regla 'dette_sin_pdf', caso "se quedó por
+ * ocupación"):
+ *   Antes, cuando una entrega del Excel (RUTEO NUEVO) no tenía NINGÚN
+ *   bloque de PDF correspondiente y la ruta tenía más de un bloque
+ *   candidato, el motor reportaba SIEMPRE 'pdf_ambiguous' (CRÍTICA) —
+ *   aunque el DETTE de esa fila no apareciera en ningún bloque del PDF
+ *   en absoluto. Caso real confirmado con EduarDo: una entrega se queda
+ *   por ocupación (ya no se va a despachar) y por lo tanto el PDF —
+ *   generado por la misma plataforma WTMS — nunca trae su bloque. Eso
+ *   NO es ambigüedad (no hay nada que "adivinar entre varios
+ *   candidatos"), así que se separó en dos reglas (ver
+ *   processors/merge.js para el detalle de la detección):
+ *     - 'pdf_ambiguous' se conserva sin cambios para el caso real de
+ *       ambigüedad (el DETTE SÍ aparece en el PDF, pero en más de un
+ *       bloque sin match específico).
+ *     - 'dette_sin_pdf' (NUEVA, ADVERTENCIA) cubre el caso "el DETTE no
+ *       aparece en ningún bloque" — mensaje orientado a que el usuario
+ *       confirme si la entrega debe excluirse del día operativo (ver
+ *       ui.js → CONFIRM_RULES / _fixCardConfirm() y
+ *       events.js → confirmExcludedDette()).
+ *
+ * CAMBIO (jul-2026 — regla K, mensaje de discrepancia y descuento de
+ * exclusiones confirmadas):
+ *   1) "rutas" → "entregas": el conteo real que compara esta regla es
+ *      de FILAS de RUTEO NUEVO (State.xlsData.length, una fila = una
+ *      entrega) contra State.merged.length — nunca fue un conteo de
+ *      rutas (una ruta puede tener varias entregas). El mensaje ahora
+ *      refleja lo que realmente se está comparando.
+ *   2) Se agrega el parámetro `excludedCount` (ver core/state.js →
+ *      State.excludedCount, calculado en processors/merge.js): cuando
+ *      el usuario confirma que una entrega sin PDF "no se realizará"
+ *      (ver events.js → confirmExcludedDette()), esa entrega se filtra
+ *      deliberadamente ANTES de llegar a State.merged — antes, la
+ *      regla K no lo sabía y generaba una alerta CRÍTICA falsa
+ *      ("discrepancia") justo en el caso que EduarDo describe como
+ *      normal y esperado (DETTE cancelada y confirmada). Ahora se
+ *      descuenta excludedCount de screenCount antes de comparar: si la
+ *      diferencia se explica POR COMPLETO por exclusiones confirmadas,
+ *      no se genera ninguna incidencia. Si sigue habiendo una
+ *      diferencia no explicada, la alerta crítica se conserva sin
+ *      cambios — sigue siendo la señal correcta de un problema real
+ *      (ej. recarga de página a medio proceso).
+ *
  * Dependencias:
  *   - State (core/state.js) — lee rows ya vía parámetro, pero escribe
  *     State.sveHasCritical / sveHasWarnings / sveLastQuality
@@ -123,24 +167,33 @@ export const SVE_ICONS = {
   'dup_march':'🔖','missing_ruta':'🔴','missing':'🟠',
   'no_march':'🔴','zero_tar':'📐','high_tar':'📐','no_pdf':'🟡',
   'no_fac':'ℹ️','bad_march':'ℹ️','integrity':'🔗','no_ventana':'📇','no_pool':'🚚','cat_dup':'🗂️','time_anomaly':'⏱️',
-  'no_cita':'📅','pdf_ambiguous':'🧩'
+  'no_cita':'📅','pdf_ambiguous':'🧩','dette_sin_pdf':'🚫'
 };
 
 /**
  * Ejecuta las reglas de validación sobre las rows del merge.
  *
  * @param {Array<object>} rows — normalmente State.merged
- * @param {number} [screenCount] — conteo de rutas que el caller
+ * @param {number} [screenCount] — conteo de entregas que el caller
  *   considera "lo que muestra la pantalla" (típicamente
- *   State.xlsData.length) — usado únicamente por la regla K
- *   (integridad UI vs memoria). Si se omite, la regla K no se evalúa.
+ *   State.xlsData.length, una fila de RUTEO NUEVO = una entrega) —
+ *   usado únicamente por la regla K (integridad UI vs memoria). Si se
+ *   omite, la regla K no se evalúa.
+ * @param {number} [excludedCount] — NUEVO (jul-2026): entregas
+ *   excluidas por el usuario (ver Events.confirmExcludedDette /
+ *   State.excludedCount) que se filtraron en ESTA corrida de
+ *   runMerge() antes de llegar a `rows`. Se resta de screenCount antes
+ *   de comparar contra rows.length — una diferencia que se explica por
+ *   completo con exclusiones confirmadas ya NO es una discrepancia
+ *   real, es el comportamiento esperado (ver core/state.js →
+ *   excludedCount).
  * @returns {null|{
  *   issues: Array<object>,
  *   quality: number,
  *   nCrit: number, nWarn: number, nInfo: number, nPass: number
  * }} — null si rows está vacío (el caller debe llamar UI.resetSVE() en ese caso)
  */
-export function runSVE(rows, screenCount) {
+export function runSVE(rows, screenCount, excludedCount) {
   if (!rows || !rows.length) return null;
 
   const raw = [];
@@ -340,13 +393,15 @@ export function runSVE(rows, screenCount) {
     [...rowIds], dette));
 
   // H: Rutas sin PDF — una alerta por ruta. Excluye filas marcadas
-  // _pdfAmbiguous (ver regla 'pdf_ambiguous' más abajo) — esas ya tienen
-  // un mensaje más preciso ("múltiples bloques candidatos") y reportarlas
-  // también aquí duplicaría el aviso con un texto genérico y menos útil.
+  // _pdfAmbiguous (ver regla 'pdf_ambiguous' más abajo) y
+  // _pdfDetteAusente (ver regla 'dette_sin_pdf' más abajo) — ambas ya
+  // tienen un mensaje más preciso que reportarlas también aquí
+  // duplicaría el aviso con un texto genérico y menos útil.
   const noPdfByRuta = new Map();
   rows.forEach(r => {
     if (r._matched) return;
     if (r._pdfAmbiguous) return;
+    if (r._pdfDetteAusente) return;
     const ruta = String(getMapped(r,'RUTA')||'').trim();
     if (!ruta) return;
     if (!noPdfByRuta.has(ruta)) noPdfByRuta.set(ruta, { cnt: 0, rowIds: new Set() });
@@ -361,12 +416,14 @@ export function runSVE(rows, screenCount) {
     [...rowIds]));
 
   // H-bis: PDF ambiguo — existen dos o más bloques de carga candidatos
-  // para esta ruta y ninguno matcheó específicamente por factura/DETTE.
-  // NUNCA se adivina cuál corresponde (ver processors/merge.js) — se
-  // reporta como CRÍTICA en vez de asignar datos de otra entrega. Caso
-  // distinto de 'bad_march' (regla J): aquí no hay un campo puntual que
-  // validar, es la entrega completa la que quedó sin PDF por falta de
-  // certeza en el match, no por un dato puntual inválido.
+  // para esta ruta, ninguno matcheó específicamente por factura/DETTE,
+  // Y el DETTE de esta fila SÍ aparece entre los destinos de esos
+  // bloques (ver processors/merge.js para el detalle de la detección).
+  // NUNCA se adivina cuál corresponde — se reporta como CRÍTICA en vez
+  // de asignar datos de otra entrega. Caso distinto de 'dette_sin_pdf'
+  // (regla H-ter, más abajo): ahí el DETTE NO aparece en ningún
+  // bloque — no hay nada que "adivinar entre candidatos", la entrega
+  // simplemente no está en el PDF.
   const pdfAmbiguousByRuta = new Map();
   rows.forEach(r => {
     if (!r._pdfAmbiguous) return;
@@ -381,6 +438,34 @@ export function runSVE(rows, screenCount) {
     'Verifica manualmente el DETTE/factura de esta entrega contra el PDF y corrige los campos.',
     cnt>1?`${cnt} entregas`:'',
     [...rowIds]));
+
+  // H-ter: DETTE ausente del PDF — NUEVO (jul-2026, ver nota de
+  // cabecera "CAMBIO (jul-2026 — nueva regla 'dette_sin_pdf'...)").
+  // A diferencia de H-bis (ambigüedad real, el DETTE sí está en el PDF
+  // pero no se sabe en cuál bloque), aquí NINGÚN bloque de PDF de la
+  // ruta corresponde a esta entrega. Caso real confirmado con EduarDo:
+  // la entrega se quedó por ocupación y ya no se generó su bloque en
+  // el PDF (el PDF lo emite la misma plataforma WTMS). Se ofrece
+  // confirmar la exclusión completa del día operativo — ver
+  // events.js → confirmExcludedDette(), que elimina la fila POR
+  // COMPLETO de State.merged (y por lo tanto del Excel final y del
+  // historial de Supabase) — o revisar manualmente por si el PDF
+  // debería traerla.
+  const detteSinPdfByRutaDette = new Map();
+  rows.forEach(r => {
+    if (!r._pdfDetteAusente) return;
+    const ruta  = String(getMapped(r,'RUTA')||'').trim();
+    const dette = String(getMapped(r,'DET')||'').trim();
+    const groupKey = ruta + '||' + dette;
+    if (!detteSinPdfByRutaDette.has(groupKey)) detteSinPdfByRutaDette.set(groupKey, { ruta, dette, rowIds: new Set() });
+    const e = detteSinPdfByRutaDette.get(groupKey);
+    if (r._rowId) e.rowIds.add(r._rowId);
+  });
+  detteSinPdfByRutaDette.forEach(({ ruta, dette, rowIds }) => rawAdd(SVE_WARN,'dette_sin_pdf', ruta,
+    'OPERADOR / LIC. / TARIMAS / MARCHAMOS / FAC. / CITA',
+    `Ruta ${ruta} · Entrega ${dette||'—'}: no aparece ningún bloque de PDF para esta entrega — ¿se quedó por ocupación y ya no se va a realizar?`,
+    'Confirma si la entrega debe excluirse del día operativo, o revisa manualmente si el PDF debería traerla.',
+    '', [...rowIds], dette));
 
   // I: Sin factura — consolidado por ruta
   const noFacByRuta = new Map();
@@ -504,11 +589,25 @@ export function runSVE(rows, screenCount) {
 
   // K: Integridad "pantalla" vs memoria — ver nota de cabecera "Fix regla K".
   // screenCount llega como parámetro (antes se leía de #bdgXLS en el DOM).
-  if (screenCount && screenCount !== rows.length)
-    rawAdd(SVE_CRIT,'integrity','','CONTEO',
-      `Discrepancia: se esperaban ${screenCount} rutas del Excel, memoria contiene ${rows.length}.`,
-      'Recarga la página y vuelve a procesar los archivos.',
-      `Excel:${screenCount}/MEM:${rows.length}`);
+  // CAMBIO (jul-2026): 1) "rutas" → "entregas" en el mensaje (ver nota de
+  // cabecera "CAMBIO (jul-2026 — regla K...)"; 2) se descuentan las
+  // exclusiones confirmadas por el usuario en ESTA corrida (excludedCount,
+  // ver merge.js/state.js) antes de comparar — una DETTE cancelada y
+  // confirmada por el usuario reduce legítimamente el conteo esperado; no
+  // es un error del sistema y no debe bloquear la exportación con una
+  // alerta crítica falsa.
+  if (screenCount) {
+    const expected = screenCount - (excludedCount || 0);
+    if (expected !== rows.length) {
+      const exclNote = excludedCount
+        ? ` (${screenCount} del Excel − ${excludedCount} excluida${excludedCount > 1 ? 's' : ''} confirmada${excludedCount > 1 ? 's' : ''})`
+        : '';
+      rawAdd(SVE_CRIT,'integrity','','CONTEO',
+        `Discrepancia: se esperaban ${expected} entrega${expected !== 1 ? 's' : ''}${exclNote}, memoria contiene ${rows.length}.`,
+        'Recarga la página y vuelve a procesar los archivos.',
+        `Excel:${expected}/MEM:${rows.length}`);
+    }
+  }
 
   // ── DEDUP ENGINE ──
   const seen = new Set();
