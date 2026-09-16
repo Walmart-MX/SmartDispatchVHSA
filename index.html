@@ -76,6 +76,19 @@ button,input,textarea{font-family:inherit}
 button{cursor:pointer;border:none;background:none}
 ::selection{background:var(--amber-soft)}
 
+/* ── LOGIN COMO PRIMERA VISTA (NUEVO, ago-2026) ──
+   La app completa (.shell) permanece oculta hasta que <body> gane la
+   clase 'app-authed' — agregada por core/app.js en los 3 puntos donde
+   ya se decidía "el usuario está autenticado, mostrar la app" (sesión
+   restaurada, login normal, primer login con perfil). Antes de eso,
+   el HTML/CSS estático se pinta con el shell YA visible detrás del
+   overlay de login (que arranca con la clase .hidden hasta que JS
+   decide qué vista mostrar) — de ahí el "flash". #nameModal/
+   #authOverlay son hermanos de .shell en el DOM (ver más abajo), así
+   que ocultar .shell no afecta en nada su propia lógica de
+   mostrar/ocultar. Puramente visual — no toca features/auth.js. */
+body:not(.app-authed) .shell{display:none!important}
+
 /* ── SHELL ── */
 .shell{display:flex;flex-direction:column;min-height:100vh}
 
@@ -234,6 +247,24 @@ button{cursor:pointer;border:none;background:none}
 .paste-preview table{font-family:var(--mono);font-size:9px;border-collapse:collapse;width:100%}
 .paste-preview th{background:var(--surface-2);color:var(--violet);padding:5px 10px;text-align:left;position:sticky;top:0;border-bottom:1px solid var(--border)}
 .paste-preview td{padding:4px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
+
+/* ── VALIDACIÓN DE FUENTES — Excel vs PDF (NUEVO, ago-2026) ──
+   Ver features/source-check.js (cálculo) y ui.js → renderSourceCheck()
+   (pintado). Reutiliza .card/.status-pill/.btn-ghost ya existentes —
+   solo estas reglas son nuevas. Oculta por defecto (display:none en el
+   HTML) hasta que haya algo que comparar. */
+.sc-hdr{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.sc-hdr-title{font-weight:700;font-size:13px;display:flex;align-items:center;gap:8px}
+.sc-counts{display:flex;gap:26px;margin-bottom:12px;flex-wrap:wrap}
+.sc-count{text-align:center}
+.sc-count strong{display:block;font-family:var(--disp);font-weight:800;font-size:22px;line-height:1}
+.sc-count span{font-size:9.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em}
+.sc-summary{font-size:12px;color:var(--text-2);margin-bottom:10px}
+.sc-detail{margin-top:12px;border-top:1px solid var(--border);padding-top:12px}
+.sc-detail-group{margin-bottom:12px}
+.sc-detail-group:last-child{margin-bottom:0}
+.sc-detail-group-title{font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);margin-bottom:6px}
+.sc-detail-list{font-family:var(--mono);font-size:11px;color:var(--text-2);line-height:1.9}
 
 /* Collapsed prep summary */
 .prep-collapsed{
@@ -678,6 +709,26 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
 .modal-input:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-bg)}
 .modal-input::placeholder{color:var(--text4)}
 .modal-hint{font-size:11px;color:var(--text3);margin-bottom:18px}
+  .auth-error{font-size:11px;color:var(--red);min-height:14px;margin:4px 0 12px}
+.auth-error strong{display:block;font-size:11.5px;font-weight:700;color:var(--red);margin-bottom:2px}
+.auth-error span{display:block;font-size:11px;color:var(--text2);line-height:1.5;font-weight:400}
+.auth-link{width:100%;background:none;border:none;color:var(--text3);font-size:11px;text-align:center;margin-top:10px;cursor:pointer;text-decoration:underline}
+   .auth-hint{display:flex;gap:8px;align-items:flex-start;background:var(--blue-bg);border:1px solid var(--blue-bd);border-radius:var(--r);padding:10px 12px;margin:2px 0 16px}
+.auth-hint-ico{font-size:14px;line-height:1;flex-shrink:0;margin-top:1px}
+.auth-hint-txt{font-size:11px;color:var(--text2);line-height:1.55}
+.auth-hint-txt strong{display:block;color:var(--blue);font-size:11.5px;margin-bottom:2px}
+.auth-hint-txt code{font-family:var(--mono);background:rgba(0,0,0,.06);border-radius:4px;padding:1px 5px;font-weight:600}
+[data-theme="dark"] .auth-hint-txt code{background:rgba(255,255,255,.1)}
+
+.auth-spinner{width:13px;height:13px;border-radius:50%;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;display:inline-block;vertical-align:-2px;margin-right:6px;animation:authSpin .6s linear infinite}
+@keyframes authSpin{to{transform:rotate(360deg)}}
+.modal-btn:disabled{opacity:.8;cursor:not-allowed}
+.modal-btn.auth-success{background:var(--green)}
+
+#authOverlay{transition:opacity .28s ease}
+#authOverlay.authOverlay-leaving{opacity:0;pointer-events:none}
+#authBox{transition:transform .28s ease}
+#authOverlay.authOverlay-leaving #authBox{transform:scale(.97)}
 .theme-opts{display:flex;gap:8px;margin-bottom:18px}
 .theme-opt{flex:1;border:2px solid var(--border2);border-radius:var(--r);padding:12px 8px;text-align:center;cursor:pointer;transition:all .15s;background:var(--surface2)}
 .theme-opt:hover{border-color:var(--blue)}
@@ -686,6 +737,23 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
 .theme-opt-label{font-size:11px;font-weight:600;color:var(--text2)}
 .modal-btn{width:100%;background:var(--navy);color:#fff;border:none;border-radius:var(--r);font-size:14px;font-weight:600;padding:12px;cursor:pointer;transition:background .15s}
 .modal-btn:hover{background:var(--navy-md)}
+
+/* ── NUEVO (ago-2026 — cerrar el modal de configuración de usuario) ──
+   Cabecera flexible para poder poner el botón "×" a la derecha del
+   logo, y botones de pie (Cancelar / Guardar) en fila — antes solo
+   existía #nameModalBtn ("Guardar cambios"), sin ninguna forma de
+   salir sin recargar la página. */
+.modal-hdr-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
+.modal-hdr-row .modal-logo{margin-bottom:0}
+.modal-close-x{
+  width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;
+  background:var(--surface3);color:var(--text3);font-size:15px;flex-shrink:0;transition:all .15s;
+}
+.modal-close-x:hover{background:var(--red-bg);color:var(--red)}
+.modal-footer-row{display:flex;gap:10px;margin-top:6px}
+.modal-footer-row .modal-btn{margin:0}
+.modal-btn-secondary{background:var(--surface3);color:var(--text2)}
+.modal-btn-secondary:hover{background:var(--border2)}
 
 /* Warn Confirm Modal */
 .warn-modal-overlay{position:fixed;inset:0;background:rgba(0,10,30,.55);backdrop-filter:blur(4px);z-index:300;display:flex;align-items:center;justify-content:center;padding:20px}
@@ -767,30 +835,102 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
 <!-- ── MODAL: Nombre + Tema ── -->
 <div class="modal-overlay hidden" id="nameModal">
   <div class="modal-box">
+    <div class="modal-hdr-row">
+      <div class="modal-logo">
+        <div class="modal-logo-mark">🚛</div>
+        <div class="modal-logo-text"><span>Smart</span>Dispatch · CeDis VHSA</div>
+      </div>
+      <!-- NUEVO (ago-2026 — cerrar el modal de configuración de
+           usuario): antes el único botón disponible era "Guardar
+           cambios" — no había forma de salir sin recargar la página.
+           Ver core/app.js (listener) y ui.js → UI.closeModal() (ya
+           existía, nunca tenía disparador). -->
+      <button class="modal-close-x" id="btnCfgClose" title="Cerrar" aria-label="Cerrar">✕</button>
+    </div>
+    <div class="modal-title">Configuración</div>
+    <div class="modal-sub">Tu cuenta y la interfaz de SmartDispatch.</div>
+
+    <div class="modal-field-label">Usuario</div>
+    <input class="modal-input" id="cfgUsername" type="text" disabled>
+    <div class="modal-hint">🔒 No editable.</div>
+
+    <div class="modal-field-label">Nombre</div>
+    <input class="modal-input" id="cfgDisplayName" type="text" maxlength="60">
+
+    <div class="modal-field-label">Nombre en CAPTURA</div>
+    <input class="modal-input" id="cfgCaptureName" type="text" maxlength="20">
+
+    <div class="modal-field-label">Contraseña actual (para guardar cambios)</div>
+    <input class="modal-input" id="cfgCurrentPassword" type="password" autocomplete="current-password" placeholder="••••••••">
+
+    <div class="modal-field-label">Nueva contraseña (opcional)</div>
+    <input class="modal-input" id="cfgNewPassword" type="password" autocomplete="new-password" placeholder="Dejar en blanco para no cambiarla">
+    <div class="modal-hint" id="cfgStatus">&nbsp;</div>
+
+    <div class="modal-field-label">Interfaz preferida</div>
+    <div class="theme-opts">
+      <div class="theme-opt selected" id="themeOptLight" data-theme="light"><div class="theme-opt-ico">☀️</div><div class="theme-opt-label">Claro</div></div>
+      <div class="theme-opt" id="themeOptDark" data-theme="dark"><div class="theme-opt-ico">🌙</div><div class="theme-opt-label">Oscuro</div></div>
+    </div>
+    <!-- NUEVO (ago-2026): fila de pie con Cancelar + Guardar — antes
+         solo existía el botón de Guardar, sin salida sin guardar. -->
+    <div class="modal-footer-row">
+      <button class="modal-btn modal-btn-secondary" id="btnCfgCancel" style="flex:1">Cancelar</button>
+      <button class="modal-btn" id="nameModalBtn" style="flex:2">Guardar cambios</button>
+    </div>
+  </div>
+</div>
+<!-- ── AUTH OVERLAY — login bloqueante, reemplaza el first-run modal anterior ── -->
+<div class="modal-overlay hidden" id="authOverlay">
+  <div class="modal-box" id="authBox">
     <div class="modal-logo">
       <div class="modal-logo-mark">🚛</div>
       <div class="modal-logo-text"><span>Smart</span>Dispatch · CeDis VHSA</div>
     </div>
-    <div class="modal-title" id="modalTitle">¡Bienvenido!</div>
-    <div class="modal-sub" id="modalSub">Configura tu sesión una sola vez. Esta información se guardará automáticamente.</div>
-    <div class="modal-field-label">Tu nombre</div>
-    <input class="modal-input" id="nameInput" type="text" placeholder="Ej. Eduardo García" maxlength="60" autocomplete="off">
-    <div class="modal-hint">Identifica quién realiza la captura en cada exportación.</div>
-    <div class="modal-field-label">Interfaz preferida</div>
-    <div class="theme-opts">
-      <div class="theme-opt selected" id="themeOptLight" data-theme="light">
-        <div class="theme-opt-ico">☀️</div>
-        <div class="theme-opt-label">Claro</div>
-      </div>
-      <div class="theme-opt" id="themeOptDark" data-theme="dark">
-        <div class="theme-opt-ico">🌙</div>
-        <div class="theme-opt-label">Oscuro</div>
-      </div>
-    </div>
-    <button class="modal-btn" id="nameModalBtn">Guardar y comenzar →</button>
+
+    <!-- Terminal conocida — solo contraseña -->
+    <form id="authFormKnown" class="auth-view" style="display:none">
+      <div class="modal-title" id="authGreeting">—</div>
+      <div class="modal-sub">Ingresa tu contraseña para iniciar.</div>
+      <div class="modal-field-label">Contraseña</div>
+      <input class="modal-input" id="authKnownPassword" type="password" autocomplete="current-password" placeholder="••••••••">
+      <div class="auth-error" id="authKnownError"></div>
+      <button type="submit" class="modal-btn">Ingresar</button>
+      <button type="button" class="auth-link" id="authChangeUser">Cambiar usuario</button>
+    </form>
+
+    <!-- Terminal nueva / tras "Cambiar usuario" -->
+    <form id="authFormFull" class="auth-view" style="display:none">
+           <div class="modal-title">Iniciar sesión</div>
+      <div class="modal-sub">Ingresa tu usuario corporativo y tu contraseña de SmartDispatch.</div>
+      <div class="modal-field-label">Usuario</div>
+      <input class="modal-input" id="authFullUsername" type="text" autocomplete="username" placeholder="Ej. e0g0913">
+      <div class="modal-field-label">Contraseña</div>
+      <input class="modal-input" id="authFullPassword" type="password" autocomplete="current-password" placeholder="••••••••">
+<div class="auth-hint">
+  <span class="auth-hint-ico">💡</span>
+  <span class="auth-hint-txt"><strong>¿Es tu primera vez iniciando sesión?</strong>Ingresa tu usuario corporativo. Tu contraseña temporal es <code>pass</code>.</span>
+</div>
+<div class="auth-error" id="authFullError"></div>
+<button type="submit" class="modal-btn">Ingresar</button>
+    </form>
+
+    <!-- Primer login — confirmar perfil -->
+    <form id="authFormProfile" class="auth-view" style="display:none">
+      <div class="modal-title">Confirma tu perfil</div>
+      <div class="modal-sub">Puedes cambiar tu contraseña genérica ahora o más tarde desde Configuración.</div>
+      <div class="modal-field-label">Nombre</div>
+      <input class="modal-input" id="authProfileDisplay" type="text" maxlength="60" placeholder="Ej. Eduardo García">
+      <div class="modal-field-label">Nombre en CAPTURA</div>
+      <input class="modal-input" id="authProfileCapture" type="text" maxlength="20" placeholder="Ej. EDUARDO">
+      <div class="modal-hint">Así aparecerás en la columna CAPTURA del Excel exportado.</div>
+      <div class="modal-field-label">Nueva contraseña (opcional)</div>
+      <input class="modal-input" id="authProfileNewPassword" type="password" autocomplete="new-password" placeholder="Dejar en blanco para conservar la actual">
+      <div class="auth-error" id="authProfileError"></div>
+      <button type="submit" class="modal-btn">Continuar →</button>
+    </form>
   </div>
 </div>
-
 <div class="shell">
   <!-- ══ TOPBAR / STEPPER ══ -->
   <div class="topbar">
@@ -892,6 +1032,27 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
         </div>
       </div>
 
+      <!-- ── VALIDACIÓN DE FUENTES — Excel vs PDF (NUEVO, ago-2026) ──
+           Oculta por defecto hasta que haya algo que comparar (ver
+           events/events.js → triggerMerge() y
+           features/source-check.js). Puramente informativa: nunca
+           bloquea "Continuar a Correcciones" ni la exportación, sin
+           importar el estado que muestre. -->
+      <div class="card card-pad" id="sourceCheckCard" style="display:none;margin-bottom:20px">
+        <div class="sc-hdr">
+          <div class="sc-hdr-title">🔎 Validación de fuentes — Excel vs PDF</div>
+          <span class="status-pill" id="scStatusPill">—</span>
+        </div>
+        <div class="sc-counts">
+          <div class="sc-count"><strong id="scExcelCount">0</strong><span>Excel</span></div>
+          <div class="sc-count"><strong id="scPdfCount">0</strong><span>PDF</span></div>
+          <div class="sc-count"><strong id="scMatchCount">0</strong><span>Coinciden</span></div>
+        </div>
+        <div class="sc-summary" id="scSummary"></div>
+        <button class="btn btn-ghost btn-sm" id="btnScToggle" style="display:none">Ver diferencias</button>
+        <div class="sc-detail" id="scDetail" style="display:none"></div>
+      </div>
+
       <div style="display:flex;justify-content:flex-end;gap:10px;margin-bottom:26px">
         <!-- CAMBIO (jul-2026 — Etapa 4): navega directo a Correcciones,
              ver core/app.js (listener de #btnGoTable) y la nota de
@@ -954,7 +1115,11 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
         <div>
           <div class="eyebrow">Paso 2 de 3</div>
           <div class="screen-title">Correcciones</div>
-          <div class="screen-sub">Resuelve cada incidencia sin salir de esta pantalla — un campo, un valor, listo.</div>
+          <!-- NUEVO (ago-2026 — "reabrir para corregir"): id agregado
+               para que UI.renderFixList() pueda alternar el texto entre
+               el flujo normal y el aviso de sesión reabierta desde el
+               Historial (ver ui.js → FIX_SUB_DEFAULT/FIX_SUB_REVIEW). -->
+          <div class="screen-sub" id="fixScreenSub">Resuelve cada incidencia sin salir de esta pantalla — un campo, un valor, listo.</div>
         </div>
         <!-- Acceso SIEMPRE visible a Calidad — NUEVO (jul-2026, Etapa 4).
              Mismo destino que #btnGoQuality (más abajo, dentro del
@@ -1099,6 +1264,7 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
           <button class="admin-nav-item" data-admin="cache">🗄️ Caché de facturas</button>
           <button class="admin-nav-item" data-admin="maint">🩺 Centro de Mantenimiento</button>
           <button class="admin-nav-item" data-admin="hist">🗂️ Historial</button>
+           <button class="admin-nav-item" data-admin="users">🧑‍🤝‍🧑 Usuarios</button>
           <button class="admin-nav-item" data-admin="cfg">⚙️ Configuración</button>
         </div>
 
@@ -1111,6 +1277,24 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
                UI.renderCatalogAdmin('poolReal') (ver ui.js) — las
                columnas mostradas vienen de CATALOGS.poolReal.columns
                (catalog-registry.js), no están hardcodeadas aquí. -->
+
+           <div class="admin-panel" data-admin-panel="users">
+  <div class="admin-hd"><h3>Usuarios</h3><p>Cuentas de SmartDispatch — el usuario corporativo no es editable una vez creado.</p></div>
+  <div class="cat-add-row">
+    <input class="cat-input" id="userUsernameInput" placeholder="Usuario corporativo (ej. e0g0913)" style="flex:1;min-width:140px">
+    <input class="cat-input" id="userPasswordInput" placeholder="Contraseña inicial" style="flex:1;min-width:120px">
+    <input class="cat-input" id="userDisplayInput" placeholder="Nombre (display)" style="flex:1;min-width:140px">
+    <input class="cat-input" id="userCaptureInput" placeholder="Nombre en CAPTURA" style="flex:1;min-width:120px">
+    <button class="btn btn-success btn-sm" id="btnUserAdd">+ Crear</button>
+  </div>
+  <div class="cat-table-wrap">
+    <table class="cat-table">
+      <thead><tr><th>Usuario</th><th>Nombre</th><th>Captura</th><th>Estado</th><th></th></tr></thead>
+      <tbody id="usersTbody"></tbody>
+    </table>
+  </div>
+  <div class="cat-status" id="usersStatus"></div>
+</div>
           <div class="admin-panel active" data-admin-panel="pool">
             <div class="admin-hd"><h3>Pool Real</h3><p>Placas, tractores y remolques. "Importar/Reemplazar" sustituye TODO el catálogo desde un Excel; la tabla de abajo permite agregar o eliminar un registro individual sin tocar el resto.</p></div>
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
@@ -1316,7 +1500,12 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
           <tbody id="histPreviewTbody"></tbody>
         </table>
       </div>
-      <div style="margin-top:14px;text-align:right">
+      <!-- NUEVO (ago-2026 — "reabrir para corregir"): botón hermano de
+           "Descargar de nuevo" — reutiliza Events._currentHistorySession,
+           ya fijado por selectHistorySession()/previewTodaySession()
+           (ver core/app.js para el listener). -->
+      <div style="margin-top:14px;text-align:right;display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-ghost btn-sm" id="btnHistoryReopen">↺ Reabrir para corregir</button>
         <button class="btn btn-amber" id="btnHistoryRedownload">⬇ Descargar de nuevo</button>
       </div>
     </div>

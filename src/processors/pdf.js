@@ -77,18 +77,14 @@
  *
  *   Se agrega _dedupeByDestino() — consolida bloques que comparten
  *   `destino` en UNA sola entrega, quedándose con los marchamos de
- *   cualquiera de las repeticiones que sí los traiga. Se aplica SOLO
- *   donde consolidar es seguro:
- *     - Ruta individual (rama `else` de parsePDF) — un HUB repetido es
- *       una sola entrega real, debe consolidarse.
- *     - PDF unificado con destinos DISTINTOS (rama `else` de
- *       `isUnified`, sameDestino === false) — un HUB puede repetirse
- *       ahí también, mismo criterio.
- *   NO se aplica cuando `sameDestino === true` (PDF unificado de dos
- *   rutas con el MISMO destino compartido): ahí la repetición del
- *   destino representa DOS entregas reales, una por cada ruta — ver
- *   FIX (ago-2026) más abajo para cómo se reparten correctamente entre
- *   las dos rutas.
+ *   cualquiera de las repeticiones que sí los traiga. Se aplica en la
+ *   ruta individual (rama `else` de parsePDF) — un HUB repetido es una
+ *   sola entrega real, debe consolidarse. NOTA (sep-2026): antes
+ *   también se aplicaba en la rama "destinos distintos" del PDF
+ *   unificado; esa rama se retiró por completo — ver FIX (sep-2026)
+ *   más abajo, "generalización de rutas unificadas con destinos
+ *   distintos". _dedupeByDestino() ahora es exclusivo de la ruta
+ *   individual.
  *
  * FIX (jul-2026) — HR. DESPACHO con fecha invertida:
  *   El sello "Impreso/enviado por fax" del PDF imprime la fecha en
@@ -151,10 +147,151 @@
  *        asumir que `rutas` (tomado tal cual del nombre del archivo)
  *        ya viene en ese orden.
  *
- *   Aplica ÚNICAMENTE a la rama sameDestino === true (destino
- *   compartido). El caso sameDestino === false (destinos distintos
- *   dentro de un PDF unificado) no se toca — usa _dedupeByDestino(),
- *   sin cambios.
+ *   NOTA (sep-2026): esta lógica de partición por remolque, que
+ *   originalmente solo se aplicaba cuando ambas rutas compartían
+ *   destino (`sameDestino === true`), ahora se aplica a TODA ruta
+ *   unificada sin importar sus destinos — ver FIX (sep-2026) más abajo,
+ *   "generalización de rutas unificadas con destinos distintos". La
+ *   regla física (un remolque = una ruta, primero el bloque de la ruta
+ *   con número mayor) no depende de si los destinos coinciden.
+ *
+ * FIX (ago-2026) — factura con formato inválido no debe perder la
+ * entrega completa:
+ *   Caso real confirmado con EduarDo (ruta 4404, Entrega 2597): la
+ *   factura del PDF traía un typo de origen ("4629160446" en vez de
+ *   "4659060446" — 2 dígitos distintos, no una diferencia de
+ *   formato). ROW_RE exigía el prefijo "4659" DENTRO del regex
+ *   estructural de la fila completa — si no coincidía, el regex
+ *   COMPLETO fallaba y la entrega entera (factura/tarimas/marchamos/
+ *   destino) nunca se extraía, aunque el resto de los datos fueran
+ *   perfectamente válidos. Consecuencia real: merge.js no encontraba
+ *   ningún bloque de PDF para esa entrega y sve.js reportaba
+ *   'dette_sin_pdf' ("¿se quedó por ocupación?") — un falso positivo,
+ *   el bloque sí existía en el PDF.
+ *
+ *   Mismo principio que ya se aplicó a marchamos (extracción tolerante
+ *   por campo): ROW_RE ahora captura CUALQUIER corrida de 10 dígitos
+ *   en la posición de factura, sin exigir el prefijo estructuralmente.
+ *   La validación real de formato (_isValidFactura()) se hace DESPUÉS
+ *   de capturar — si no pasa, se registra en `facturaIssues` (mismo
+ *   patrón que `marchamoIssues`) para diagnóstico vía sve.js (regla
+ *   'bad_fact', INFORMATIVA).
+ *
+ *   DIFERENCIA IMPORTANTE respecto a un marchamo inválido: la factura
+ *   NUNCA se vacía, sin importar si el formato es inválido. Vaciarla
+ *   rompería el match específico contra el Excel (merge.js busca
+ *   `ruta + '|' + factura`) sin ganar nada a cambio — a diferencia de
+ *   un marchamo, donde no hay ningún otro dato que dependa de su
+ *   valor. Se conserva tal cual se extrajo del PDF.
+ *
+ * FIX (sep-2026) — HUBs de "ruta alterna" generan falsos positivos de
+ * ambigüedad/ausencia de PDF:
+ *   Caso real confirmado con EduarDo: los HUB 29999138, 29999227 y
+ *   29999230 aparecen en el PDF como una "Entrega 1" separada, con una
+ *   sola línea de datos de conteos triviales (GLS=1, Tarimas=1,
+ *   Posiciones=1, Cajas=1) seguida de su propio "Total de ordenes de
+ *   compra... Fin del informe" — un bloque de relleno que WTMS agrega
+ *   cuando la carga tomó alguna ruta alterna, NO una entrega real.
+ *
+ *   Antes de este fix, si la factura de ese bloque de relleno resultaba
+ *   tener 10 dígitos con prefijo 4659 (coincidencia de formato, caso
+ *   real: PDF 6204-6205), ROW_RE SÍ generaba un rawRow válido para él
+ *   — agregando un `destino` extra falso al documento unificado, lo
+ *   cual disparaba la generalización de destinos distintos (ver FIX
+ *   más abajo) y podía desalinear la asignación de bloques por
+ *   remolque. Se filtran estos tres HUB de IGNORED_ALT_ROUTE_DESTINOS
+ *   inmediatamente después de construir `rawRows` — antes de calcular
+ *   destinos, antes de dividir en bloques por remolque, y antes de
+ *   cualquier dedupe — para que nunca cuenten como una entrega real,
+ *   sin importar el formato accidental de su factura.
+ *
+ * FIX (sep-2026) — generalización de rutas unificadas con destinos
+ * distintos:
+ *   Antes de este fix, `parsePDF()` bifurcaba el manejo de una ruta
+ *   unificada según si ambas rutas compartían el mismo HUB destino
+ *   (`sameDestino`):
+ *     - sameDestino === true  → dividía por remolque (marchamo) y
+ *       asignaba cada bloque completo a su ruta real (ver FIX
+ *       ago-2026 arriba) — esto SÍ funcionaba correctamente.
+ *     - sameDestino === false → NUNCA dividía por remolque. Solo
+ *       deduplicaba por destino (_dedupeByDestino) sobre TODAS las
+ *       filas del documento mezcladas, y asignaba `ruta: baseName`
+ *       (el nombre completo del archivo, ej. "6204-6205") a TODAS las
+ *       entregas resultantes — un bug real: ninguna entrega podía
+ *       hacer match contra el número de ruta individual en merge.js,
+ *       así que AMBAS rutas del PDF terminaban reportadas como "sin
+ *       PDF asociado" (regla SVE 'no_pdf').
+ *
+ *   Caso real confirmado con EduarDo: las rutas unificadas no siempre
+ *   comparten el mismo HUB — hay ocasiones en que cada ruta combinada
+ *   entrega a un DETTE/HUB distinto. La partición por remolque
+ *   (_splitUnifiedBlocksByMarchamo) es una regla física de cómo WTMS
+ *   imprime el documento (un remolque = una ruta, primero el bloque de
+ *   la ruta con número mayor) que NO depende de si los destinos
+ *   coinciden — por lo tanto se generaliza y se aplica siempre a
+ *   cualquier ruta unificada, eliminando por completo la bifurcación
+ *   sameDestino/no-sameDestino.
+ *
+ *   Algoritmo unificado (reemplaza ambas ramas anteriores):
+ *     1. Se filtran los HUB de ruta alterna (ver FIX de arriba).
+ *     2. Se dividen las filas restantes en exactamente 2 bloques por
+ *        remolque (_splitUnifiedBlocksByMarchamo, con el mismo
+ *        respaldo de corte por mitad si no se detectan exactamente 2).
+ *     3. Se asignan los bloques a las rutas reales por magnitud
+ *        numérica descendente (mismo criterio ya validado en ago-2026).
+ *     4. NUEVO: dentro de CADA bloque ya asignado a su ruta real, se
+ *        agrupa por `destino` — si el bloque trae un solo destino, el
+ *        comportamiento es idéntico al de la rama sameDestino anterior
+ *        (tarimas sumadas de todas sus facturas/invoices, un solo
+ *        resultado); si el bloque trae destinos distintos (el caso que
+ *        antes rompía), se genera una entrega independiente por cada
+ *        destino, cada una con su propia ruta correcta.
+ *   El agrupado por destino DENTRO de un bloque nunca cruza bloques —
+ *   eso es justamente lo que garantiza que cada entrega quede asociada
+ *   a la ruta real que le corresponde, sin importar si dos rutas
+ *   combinadas comparten HUB o no.
+ *
+ *   _dedupeByDestino() deja de usarse en la rama de rutas unificadas
+ *   (su semántica — "quedarse con la primera aparición, no sumar" —
+ *   es para el caso distinto de un HUB físicamente repetido dentro de
+ *   UNA sola entrega de ruta individual, ver FIX jul-2026 arriba). Se
+ *   conserva sin cambios para esa rama.
+ *
+ * FIX (sep-2026) — segunda factura embebida en la línea de destino
+ * pierde la entrega completa ("caso Ruta 1111, Entrega 6154000"):
+ *   Caso real confirmado con EduarDo. Cuando una misma fila del PDF
+ *   agrupa DOS facturas bajo una sola Secuencia (celda "Facturas" con
+ *   texto envuelto en dos líneas, ej. "4659061458\n4659061457"), la
+ *   línea de continuación que trae el destino (CONT_RE) queda con TRES
+ *   tokens en vez de uno: destino + segunda factura + marchamo (ej.
+ *   "4659 6154000 4659061457 144661"). CONT_RE solo toleraba como
+ *   máximo UN token opcional después del destino — con dos tokens
+ *   extra, el regex completo no matcheaba la línea, así que el bloque
+ *   `if (cm) {...}` nunca se ejecutaba: `destino` se quedaba vacío
+ *   (valor inicial `''`), y las líneas siguientes de marchamo tampoco
+ *   se consumían (MARC_CANDIDATE_RE exige la línea completa en dígitos
+ *   puros, y esta línea tiene espacios). Resultado: la entrega entera
+ *   quedaba indexada con destino vacío en State.pdfData — no matcheaba
+ *   contra el DETTE del Excel ni por factura de encabezado ni por
+ *   destino, y el comparador informativo Excel-vs-PDF
+ *   (features/source-check.js) reportaba un falso "faltante en PDF" +
+ *   un falso "solo en PDF" (sin entrega) para la misma ruta.
+ *
+ *   Se extiende CONT_RE con un grupo opcional adicional para la
+ *   segunda factura (exactamente 10 dígitos — un marchamo real nunca
+ *   tiene más de 6, así que no hay ambigüedad posible con un marchamo
+ *   genuino). Cuando aparece, se registra como un `rawRow` ADICIONAL
+ *   (mismo destino, tarimas '0', sin marchamos propios — los
+ *   marchamos del bloque son compartidos y se siguen acumulando en el
+ *   row principal) y se empuja a `rawRows` DESPUÉS del row del
+ *   encabezado — así _dedupeByDestino()/_groupBlockByDestino() (que ya
+ *   existían) conservan factura/tarimas del encabezado (el dato
+ *   correcto y completo) y solo consolidan destino + marchamos, sin
+ *   perder la segunda factura por completo (queda disponible para
+ *   diagnóstico y para un eventual match por factura contra el Excel).
+ *   Validado contra los PDFs reales de las rutas 1111 (caso con el bug)
+ *   y 1310 (fila con un solo token de continuación, sin segunda
+ *   factura) — el segundo caso queda exactamente igual que antes.
  *
  * CAMBIO (Fase 0 — telemetría de citas no reconocidas, ago-2026):
  *   Antes, dentro de pdfExtract(), cualquier anotación FreeText cuyo
@@ -195,6 +332,103 @@
  *   events.js, igual que ya hace processors/merge.js con los misses de
  *   catálogo.
  *
+ * FIX (sep-2026) — corrección de marchamos vía anotación de Edge
+ * ("Agregar texto") + exclusión de la esquina de identificación:
+ *   Caso real confirmado con EduarDo: cuando el marchamo impreso en el
+ *   PDF viene vacío/incompleto para una entrega, el equipo usa la
+ *   herramienta "Agregar texto" de Edge (NUNCA "Dibujar" — un trazo a
+ *   mano alzada llega como anotación Ink, sin texto extraíble, eso NO
+ *   sería viable sin OCR) para escribir el/los marchamo(s) correcto(s)
+ *   directamente sobre el PDF, dentro del recuadro de la tabla de esa
+ *   entrega. Esas anotaciones son del mismo subtipo FreeText que ya lee
+ *   este archivo para las citas.
+ *
+ *   Antes de este fix, CUALQUIER FreeText sin fecha caía directo a
+ *   `citaMisses` (telemetría del Centro de Mantenimiento) — la
+ *   corrección del capturista nunca llegaba a `marchamos[]`. Ahora,
+ *   dentro de la rama "no es cita" de pdfExtract(), se prueba PRIMERO
+ *   si el texto tiene forma de lista de marchamos
+ *   (_extractMarchamoAnnotation — exige que TODOS los tokens separados
+ *   por salto de línea/coma/punto y coma pasen _isValidMarchamo(), lo
+ *   que ya excluye por diseño anotaciones con letras o símbolos, como
+ *   las de identificación de ruta/temperatura) antes de darla por
+ *   perdida como cita-no-reconocida.
+ *
+ *   DECISIÓN DE FUSIÓN (confirmada con EduarDo): la anotación NUNCA
+ *   reemplaza un marchamo ya detectado en la tabla impresa del PDF —
+ *   se conserva lo impreso y se complementa con lo anotado, llenando
+ *   primero cualquier posición vacía (hueco '' dejado por un marchamo
+ *   inválido descartado) y agregando al final si no quedan huecos, sin
+ *   exceder MAX_MARCH_SLOTS ni duplicar un valor ya presente — ver
+ *   _mergeAnnotationMarchamos().
+ *
+ *   EXCLUSIÓN DE ZONA DE ENCABEZADO: confirmado con EduarDo que la
+ *   esquina superior de la página 1 se usa exclusivamente para notas
+ *   de identificación del documento (ruta, operador, certificados,
+ *   tipo de mercancía — ej. "RUTA 3122\nADRIANA\nTIF", "TEMP -22°C"),
+ *   nunca para datos de una entrega puntual. Aunque el filtro de
+ *   contenido (_extractMarchamoAnnotation) ya descarta esas dos
+ *   anotaciones de ejemplo por traer letras, se agrega una segunda
+ *   barrera POR POSICIÓN (_inHeaderZone) como defensa adicional. Se
+ *   aplica ÚNICAMENTE dentro de la rama "no es cita".
+ *
+ * FIX (sep-2026) — ancla de ENCABEZADO, no de continuación, para
+ * asociar marchamos de anotación a su entrega ("caso Ruta 3122,
+ * TIENDA 2289/2286 intercambiadas"):
+ *   Un primer intento de corrección (ver historial de este archivo)
+ *   asociaba cada anotación de marchamo por proximidad contra
+ *   `tableRowPositions`, anclado a la posición de la LÍNEA DE
+ *   CONTINUACIÓN (CONT_RE, ej. "4659 2289") que trae el destino. Se
+ *   validó con el PDF real (3122.pdf) y el resultado fue incorrecto:
+ *   las anotaciones se asignaron a la entrega VECINA (984 en vez de
+ *   2289, 2289 en vez de 2286).
+ *
+ *   Causa raíz medida con datos reales (extracción fiel con
+ *   pdfjsLib, misma versión que usa la app): el renglón de
+ *   CONTINUACIÓN está entre 12 y 26pt MÁS ABAJO que el renglón de
+ *   ENCABEZADO (ROW_RE) de la misma entrega — y es justo en el
+ *   renglón de encabezado, no en el de continuación, donde vive
+ *   visualmente la columna Marchamo (ahí es donde WTMS imprime
+ *   valores como "66006", y donde el equipo pega su anotación al
+ *   lado). Anclar contra la línea de continuación desplazaba el
+ *   punto de referencia lo suficiente como para que la fila
+ *   "vecina" (la anterior o la siguiente) quedara más cerca en
+ *   distancia vertical que la fila real:
+ *
+ *     Fila 984  (encabezado) → y=377   Fila 984  (continuación) → y=389
+ *     Fila 2289 (encabezado) → y=403   Fila 2289 (continuación) → y=415
+ *     Fila 2286 (encabezado) → y=429   Fila 2286 (continuación) → y=441
+ *
+ *     Anotación "535054/387358" → y=396.8
+ *       distancia a encabezado 2289 (403) = 6.2   ← correcto
+ *       distancia a continuación 2289 (415) = 18.2
+ *       distancia a continuación 984 (389) = 7.8  ← ganaba antes (INCORRECTO)
+ *
+ *     Anotación "535055/387359" → y=422.6
+ *       distancia a encabezado 2286 (429) = 6.4   ← correcto
+ *       distancia a continuación 2286 (441) = 18.4
+ *       distancia a continuación 2289 (415) = 7.6 ← ganaba antes (INCORRECTO)
+ *
+ *   Se corrige guardando la posición de la línea de ENCABEZADO
+ *   (capturada como `headerLine` justo antes de avanzar `i` hacia la
+ *   línea de continuación) en `tableRowPositions`, en vez de la
+ *   posición de la línea de continuación. Con este ancla, ambas
+ *   anotaciones del caso real quedan a ~6pt de su fila correcta, muy
+ *   por debajo de cualquier fila vecina (~19-33pt) — margen amplio,
+ *   no un empate cerrado.
+ *
+ *   Deliberadamente SIN fallback a `destPositions` (bloques
+ *   descriptivos "Entrega N ... Zona horaria") si `tableRowPositions`
+ *   sale vacío — es preferible no aplicar ningún marchamo de
+ *   anotación (la incidencia 'no_march' queda visible para revisión
+ *   manual) a aplicarlo con un ancla que ya se demostró incorrecta
+ *   dos veces.
+ *
+ *   Ningún otro comportamiento de pdf.js cambia. merge.js/constants.js
+ *   no requieren ningún ajuste — siguen consumiendo `pdfRow.marchamos`
+ *   exactamente igual, sin que les importe si un valor vino de la
+ *   tabla impresa o de una anotación.
+ *
  * Dependencia externa: pdfjsLib (cargado globalmente desde el CDN en
  * index.html, con su workerSrc ya configurado ahí). Este módulo no
  * configura el worker — eso es responsabilidad del bootstrap en index.html.
@@ -222,6 +456,65 @@ const MARC_CANDIDATE_RE = /^\d{3,10}$/;
 /** Valida el formato final de un marchamo ya extraído. @private */
 function _isValidMarchamo(s) {
   return MARC_RE.test(String(s || '').trim());
+}
+
+/**
+ * Formato válido de factura del CeDis: siempre 4659 + 6 dígitos (ej.
+ * "4659060453"). NUEVO (ago-2026, Alcance B — falso positivo
+ * 'dette_sin_pdf' por factura con typo de origen, ver nota de cabecera
+ * "FIX (ago-2026) — factura con formato inválido no debe perder la
+ * entrega completa" más arriba).
+ */
+const FACT_RE = /^4659\d{6}$/;
+
+/** Valida el formato final de una factura ya extraída. @private */
+function _isValidFactura(s) {
+  return FACT_RE.test(String(s || '').trim());
+}
+
+/**
+ * HUB de "ruta alterna" — NUEVO (sep-2026, ver nota de cabecera "FIX
+ * (sep-2026) — HUBs de 'ruta alterna' generan falsos positivos").
+ * WTMS agrega estos HUB como una "Entrega" de relleno cuando la carga
+ * tomó alguna ruta alterna — NUNCA representan una entrega real, sin
+ * importar el formato de la factura que traigan. Se filtran los
+ * rawRows que apunten a cualquiera de estos destinos ANTES de calcular
+ * destinos/bloques/dedupe, para ambas ramas de parsePDF (ruta
+ * individual y ruta unificada).
+ *
+ * Confirmado con EduarDo — para agregar un HUB nuevo de este tipo en
+ * el futuro: una entrada más en este Set, ninguna otra parte de este
+ * archivo cambia.
+ */
+const IGNORED_ALT_ROUTE_DESTINOS = new Set(['29999138', '29999227', '29999230']);
+
+/**
+ * Zona de "encabezado administrativo" — NUEVO (sep-2026, ver nota de
+ * cabecera "FIX (sep-2026) — corrección de marchamos vía anotación de
+ * Edge... + exclusión de la esquina de identificación"). Anotaciones
+ * FreeText dentro de esta región de la página se ignoran por completo
+ * (ni marchamo ni citaMiss) — confirmado con EduarDo que esa zona se
+ * usa exclusivamente para notas de identificación del documento (ruta,
+ * operador, certificados, tipo de mercancía), nunca para datos de una
+ * entrega puntual.
+ *
+ * yMaxRatio se expresa como fracción de la altura de la página (no en
+ * puntos absolutos), para tolerar variación de tamaño de página entre
+ * documentos. Tabla de configuración explícita — para ajustar el
+ * alcance de la zona con más muestras reales, basta con cambiar esta
+ * constante; _inHeaderZone() y sus llamadores no cambian.
+ */
+const HEADER_ZONE = { page: 1, yMaxRatio: 0.40 };
+
+/**
+ * @private
+ * @param {number} pageNum
+ * @param {number} y_td — posición vertical medida desde arriba de la página
+ * @param {number} pageH — altura total de la página
+ * @returns {boolean}
+ */
+function _inHeaderZone(pageNum, y_td, pageH) {
+  return pageNum === HEADER_ZONE.page && y_td <= pageH * HEADER_ZONE.yMaxRatio;
 }
 
 /**
@@ -263,7 +556,11 @@ function _citaPatternSignature(text) {
  * esa lógica — para que la asignación de citas reconocidas y la de
  * `citaMisses` (no reconocidas) usen exactamente el mismo criterio de
  * proximidad, sin arriesgarse a que las dos implementaciones diverjan
- * con el tiempo.
+ * con el tiempo. NUEVO (sep-2026): también la reutiliza la fusión de
+ * marchamos por anotación de Edge — recibiendo `tableRowPositions` en
+ * vez de `destPositions` (ver nota de cabecera "FIX (sep-2026) — ancla
+ * de ENCABEZADO..."), la función en sí no cambia — es genérica sobre
+ * cualquier lista de {destino,pageNum,y}.
  * @private
  * @param {{pageNum:number, y_td:number}} item
  * @param {Array<{destino:string,pageNum:number,y:number}>} destPositions
@@ -281,20 +578,24 @@ function _nearestDestino(item, destPositions) {
 /**
  * Extrae todas las líneas de texto (agrupadas por posición vertical),
  * las anotaciones de tipo FreeText (citas de cada destino) reconocidas,
- * y — NUEVO (Fase 0, ago-2026) — las anotaciones FreeText con texto que
- * NO matcheó el formato de fecha esperado (`citaMisses`), de un PDF.
+ * — NUEVO (Fase 0, ago-2026) — las anotaciones FreeText con texto que
+ * NO matcheó el formato de fecha esperado (`citaMisses`), y — NUEVO
+ * (sep-2026) — las anotaciones FreeText con forma de lista de
+ * marchamos (`marchamoAnnots`, ver nota de cabecera "FIX (sep-2026) —
+ * corrección de marchamos vía anotación de Edge"), de un PDF.
  *
  * @param {File} file
  * @returns {Promise<{
  *   lines: Array<{pageNum:number,y:number,text:string}>,
  *   annots: Array<{pageNum:number,y_td:number,cita:string}>,
- *   citaMisses: Array<{pageNum:number,y_td:number,signature:string}>
+ *   citaMisses: Array<{pageNum:number,y_td:number,signature:string}>,
+ *   marchamoAnnots: Array<{pageNum:number,y_td:number,marchamos:string[]}>
  * }>}
  */
 export async function pdfExtract(file) {
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-  const lines = [], annots = [], citaMisses = [];
+  const lines = [], annots = [], citaMisses = [], marchamoAnnots = [];
 
   for (let p = 1; p <= pdf.numPages; p++) {
     const page  = await pdf.getPage(p);
@@ -331,6 +632,28 @@ export async function pdfExtract(file) {
       const dateMatch = allText.match(/(\d{2}[\/\-]\d{2}[\/\-]\d{4})/);
       const timeMatch = allText.match(/(\d{1,2})[:.;]\s*(\d{2})(?![\/\-\d])/);
       if (!dateMatch) {
+        const y_td = pageH - a.rect[3];
+
+        // NUEVO (sep-2026 — exclusión de zona de encabezado): ver nota
+        // de cabecera "FIX (sep-2026) — corrección de marchamos vía
+        // anotación de Edge... + exclusión de la esquina de
+        // identificación". Notas de identificación del documento
+        // (ruta/operador/certificados/temperatura) nunca son marchamo
+        // ni cita — se ignoran por completo, sin generar ninguna
+        // incidencia de telemetría.
+        if (_inHeaderZone(p, y_td, pageH)) continue;
+
+        // NUEVO (sep-2026 — marchamos corregidos vía anotación de
+        // Edge): se prueba PRIMERO si el texto tiene forma de lista de
+        // marchamos antes de darlo por perdido como "cita no
+        // reconocida" — mismo tipo de anotación (FreeText), dos
+        // intenciones posibles del capturista.
+        const marchList = _extractMarchamoAnnotation(allText);
+        if (marchList) {
+          marchamoAnnots.push({ pageNum: p, y_td, marchamos: marchList });
+          continue;
+        }
+
         // NUEVO (Fase 0 — telemetría de citas no reconocidas, ago-2026):
         // antes esta anotación se descartaba en silencio (`continue`),
         // sin dejar ningún rastro de que existía texto que no matcheó
@@ -345,7 +668,7 @@ export async function pdfExtract(file) {
         if (trimmed) {
           citaMisses.push({
             pageNum: p,
-            y_td: pageH - a.rect[3],
+            y_td,
             signature: _citaPatternSignature(trimmed)
           });
         }
@@ -364,7 +687,7 @@ export async function pdfExtract(file) {
       annots.push({ pageNum: p, y_td: pageH - a.rect[3], cita: cita.trim() });
     }
   }
-  return { lines, annots, citaMisses };
+  return { lines, annots, citaMisses, marchamoAnnots };
 }
 
 /**
@@ -389,6 +712,58 @@ function _pushMarchamo(raw, marchamos, issues) {
 }
 
 /**
+ * Detecta si el texto de una anotación FreeText tiene "forma de lista
+ * de marchamos" — NUEVO (sep-2026, ver nota de cabecera "FIX (sep-2026)
+ * — corrección de marchamos vía anotación de Edge"). El equipo usa la
+ * herramienta "Agregar texto" de Edge (nunca "Dibujar" — eso llegaría
+ * como anotación Ink, sin texto extraíble) para escribir marchamos
+ * corregidos directamente sobre el PDF cuando la tabla impresa viene
+ * vacía o incompleta.
+ *
+ * Criterio: TODOS los tokens (separados por salto de línea, coma o
+ * punto y coma) deben pasar _isValidMarchamo() — cualquier letra,
+ * símbolo o separador de fecha ("/", "-") hace fallar el token
+ * individual, así que anotaciones de otro tipo (ej.
+ * "RUTA 3122\nADRIANA\nTIF", "TEMP -22°C") nunca se confunden con
+ * esto. Se evalúa DESPUÉS del chequeo de fecha (dateMatch) en
+ * pdfExtract() — una cita real nunca llega a probarse aquí.
+ * @private
+ * @param {string} text
+ * @returns {string[]|null} lista de marchamos válidos, o null si el
+ *   texto no tiene esa forma (algún token no pasa _isValidMarchamo)
+ */
+function _extractMarchamoAnnotation(text) {
+  const tokens = String(text || '').trim().split(/[\s,;]+/).map(t => t.trim()).filter(Boolean);
+  if (!tokens.length) return null;
+  return tokens.every(t => _isValidMarchamo(t)) ? tokens : null;
+}
+
+/**
+ * Fusiona marchamos de anotación de Edge con los ya extraídos de la
+ * tabla impresa — NUEVO (sep-2026). Decisión confirmada con EduarDo: la
+ * anotación NUNCA reemplaza un marchamo ya válido — se conserva lo
+ * detectado y se complementa, ocupando primero cualquier posición
+ * vacía (hueco '' dejado por un marchamo inválido descartado, ver
+ * _pushMarchamo) y agregando al final si no quedan huecos, sin exceder
+ * MAX_MARCH_SLOTS. Valores ya presentes se ignoran (no duplica).
+ * @private
+ * @param {string[]} marchamos — arreglo de salida (mutado in-place)
+ * @param {string[]} values — marchamos detectados en la anotación
+ * @returns {boolean} true si agregó al menos un valor nuevo
+ */
+function _mergeAnnotationMarchamos(marchamos, values) {
+  let applied = false;
+  for (const val of values) {
+    if (marchamos.includes(val)) continue;
+    if (marchamos.length >= MAX_MARCH_SLOTS) break;
+    const emptyIdx = marchamos.indexOf('');
+    if (emptyIdx !== -1) marchamos[emptyIdx] = val; else marchamos.push(val);
+    applied = true;
+  }
+  return applied;
+}
+
+/**
  * Consolida bloques de PDF que repiten el mismo `destino` dentro de UNA
  * SOLA entrega física — caso real confirmado con EduarDo: un HUB que la
  * plataforma WTMS imprime varias veces en el mismo PDF, pero solo la
@@ -403,12 +778,19 @@ function _pushMarchamo(raw, marchamos, issues) {
  * por ruta+destino, último .set() gana) — falso positivo de "sin
  * marchamo principal" (regla SVE no_march).
  *
- * NO se aplica al caso de rutas COMBINADAS con destino compartido (ver
- * `sameDestino` en parsePDF): ahí la repetición del mismo destino SÍ
- * representa dos entregas reales, una por cada ruta del PDF unificado
- * — ver _splitUnifiedBlocksByMarchamo() para cómo se reparten.
+ * ÚNICO USO ACTUAL (sep-2026): la rama de ruta INDIVIDUAL de parsePDF()
+ * — un HUB repetido en el PDF de una sola ruta es una sola entrega
+ * real. Antes también se usaba en la rama "destinos distintos" de una
+ * ruta unificada; esa rama se retiró (ver FIX (sep-2026) —
+ * "generalización de rutas unificadas con destinos distintos" en la
+ * cabecera del archivo) porque su semántica (quedarse con la PRIMERA
+ * aparición sin sumar) es incorrecta para el caso de una ruta
+ * unificada, donde varias filas con el mismo destino dentro de un
+ * mismo bloque/remolque representan facturas/invoices DISTINTOS de una
+ * misma entrega y deben sumarse, no deduplicarse — ver el agrupado
+ * inline dentro de parsePDF() para ese caso.
  * @private
- * @param {Array<{destino:string, factura:string, tarimas:string, marchamos:string[], marchamoIssues:Array}>} list
+ * @param {Array<{destino:string, factura:string, tarimas:string, marchamos:string[], marchamoIssues:Array, facturaIssues:Array}>} list
  * @returns {Array<object>} misma forma, un elemento por destino único
  */
 function _dedupeByDestino(list) {
@@ -419,24 +801,29 @@ function _dedupeByDestino(list) {
     // nada que consolidar en ese caso.
     const key = r.destino || Symbol();
     if (!byKey.has(key)) {
-      byKey.set(key, { ...r, marchamos: [...r.marchamos], marchamoIssues: [...r.marchamoIssues] });
+      byKey.set(key, { ...r, marchamos: [...r.marchamos], marchamoIssues: [...r.marchamoIssues], facturaIssues: [...(r.facturaIssues || [])] });
       order.push(key);
       continue;
     }
     const existing = byKey.get(key);
     // Conserva factura/tarimas del primer bloque (idénticos entre
     // repeticiones del mismo HUB); toma los marchamos de cualquiera de
-    // las repeticiones que sí los traiga.
+    // las repeticiones que sí los traiga. facturaIssues (NUEVO,
+    // ago-2026) se concatena igual que marchamoIssues — diagnóstico
+    // puramente informativo, nunca decide cuál factura "gana".
     if (!existing.marchamos.length && r.marchamos.length) existing.marchamos = [...r.marchamos];
     if (r.marchamoIssues.length) existing.marchamoIssues.push(...r.marchamoIssues);
+    if (r.facturaIssues && r.facturaIssues.length) existing.facturaIssues.push(...r.facturaIssues);
   }
   return order.map(k => byKey.get(k));
 }
 
 /**
- * Divide rawRows de una ruta unificada CON destino compartido en los
- * bloques físicos reales (uno por remolque) — ver nota de cabecera
- * "FIX (ago-2026) — bug del reparto desigual de marchamos".
+ * Divide rawRows de una ruta unificada en los bloques físicos reales
+ * (uno por remolque) — ver nota de cabecera "FIX (ago-2026) — bug del
+ * reparto desigual de marchamos" y su generalización en "FIX
+ * (sep-2026) — generalización de rutas unificadas con destinos
+ * distintos".
  *
  * WTMS solo imprime el marchamo en la PRIMERA fila de cada remolque —
  * el resto de filas del mismo remolque llegan sin marchamo propio. Esa
@@ -446,6 +833,11 @@ function _dedupeByDestino(list) {
  * marchamoIssues.length) — un marchamo con formato inválido sigue
  * siendo evidencia de que WTMS intentó imprimir uno ahí, así que
  * también cuenta como inicio de bloque.
+ *
+ * NOTA (sep-2026): esta función se aplica a TODA ruta unificada, sin
+ * importar si ambas rutas comparten el mismo HUB destino o no — la
+ * regla física (un remolque = una ruta) es independiente de esa
+ * coincidencia. La bifurcación anterior por `sameDestino` se retiró.
  *
  * @private
  * @param {Array<{marchamos:string[], marchamoIssues:Array}>} rawRows
@@ -468,6 +860,53 @@ function _splitUnifiedBlocksByMarchamo(rawRows) {
 }
 
 /**
+ * Agrupa las filas de UN bloque (ya asignado a su ruta real) por
+ * `destino`, sumando tarimas/consolidando marchamos e issues DENTRO de
+ * cada grupo — NUEVO (sep-2026, ver nota de cabecera "FIX (sep-2026) —
+ * generalización de rutas unificadas con destinos distintos").
+ *
+ * A diferencia de _dedupeByDestino() (que conserva solo la PRIMERA
+ * aparición sin sumar — pensada para un HUB literalmente repetido dos
+ * veces por WTMS), aquí cada fila del bloque representa una
+ * factura/invoice DISTINTA de una misma entrega física — todas las
+ * filas que comparten destino dentro de este bloque deben sumarse
+ * (mismo criterio que ya usaba, antes de esta generalización, el caso
+ * sameDestino === true para el bloque completo).
+ *
+ * Si el bloque trae un único destino, el resultado es un solo grupo —
+ * comportamiento idéntico al de la rama sameDestino anterior. Si trae
+ * más de un destino (el caso que antes rompía, ruta unificada con
+ * DETTE/HUB distintos por ruta), se genera un grupo independiente por
+ * cada destino, cada uno destinado a convertirse en una entrega propia
+ * con la ruta correcta ya resuelta por el caller.
+ * @private
+ * @param {Array<object>} blockRows — sub-arreglo contiguo de rawRows,
+ *   ya asignado a una ruta real por el caller
+ * @returns {Array<{destino:string, factura:string, tarimas:string,
+ *   marchamos:string[], marchamoIssues:Array, facturaIssues:Array}>}
+ */
+function _groupBlockByDestino(blockRows) {
+  const byDestino = new Map();
+  const order = [];
+  blockRows.forEach(r => {
+    const key = r.destino || Symbol();
+    if (!byDestino.has(key)) { byDestino.set(key, []); order.push(key); }
+    byDestino.get(key).push(r);
+  });
+  return order.map(key => {
+    const rows          = byDestino.get(key);
+    const marchamos      = [...new Set(rows.flatMap(r => r.marchamos))];
+    const marchamoIssues = rows.flatMap(r => r.marchamoIssues || []);
+    // facturaIssues/factura — se toma del PRIMER row del grupo, mismo
+    // criterio que ya usaba el caso sameDestino anterior: la factura
+    // "representativa" de la entrega es la de su primer invoice.
+    const facturaIssues = rows[0].facturaIssues || [];
+    const tarimas = String(rows.reduce((s, r) => s + (parseInt(r.tarimas, 10) || 0), 0));
+    return { destino: rows[0].destino, factura: rows[0].factura, tarimas, marchamos, marchamoIssues, facturaIssues };
+  });
+}
+
+/**
  * Interpreta las líneas extraídas por pdfExtract() según el formato
  * específico de los PDFs de carga de Walmart CeDis, y produce las filas
  * estructuradas del documento más — NUEVO (Fase 0, ago-2026) — el
@@ -476,13 +915,15 @@ function _splitUnifiedBlocksByMarchamo(rawRows) {
  * Maneja dos casos de nombre de archivo:
  *   - "12345.pdf"        → ruta única
  *   - "12345-67890.pdf"  → PDF unificado de dos rutas (se reparten
- *                            los destinos entre ambas)
+ *                            los destinos entre ambas — ver FIX
+ *                            (sep-2026), generalización de destinos
+ *                            distintos, en la cabecera del archivo)
  *
- * @param {{ lines: Array, annots: Array, citaMisses: Array }} extracted — salida de pdfExtract()
+ * @param {{ lines: Array, annots: Array, citaMisses: Array, marchamoAnnots: Array }} extracted — salida de pdfExtract()
  * @param {string} filename — nombre original del archivo (para detectar ruta(s))
  * @returns {{
  *   rows: Array<{ ruta, operador, destino, factura, tarimas, marchamos,
- *                  marchamoIssues, cita, hrDespacho }>,
+ *                  marchamoIssues, facturaIssues, cita, hrDespacho }>,
  *   unrecognizedCitas: Array<{ ruta:string, destino:string, signature:string }>
  * }}
  *   rows.marchamoIssues: Array<{raw:string}> — marchamos candidatos
@@ -491,14 +932,29 @@ function _splitUnifiedBlocksByMarchamo(rawRows) {
  *   features/validation/sve.js (regla 'bad_march') para reportar
  *   la incidencia con el valor crudo, sin bloquear ni afectar el
  *   resto de los campos de la misma entrega.
+ *   rows.facturaIssues: Array<{raw:string}> — NUEVO (ago-2026, Alcance
+ *   B). A diferencia de marchamoIssues, la factura NUNCA se vacía
+ *   cuando el formato es inválido (ver nota de cabecera "FIX
+ *   (ago-2026)") — se conserva intacta en `factura` para no romper el
+ *   match contra el Excel. Consumido por sve.js (regla 'bad_fact',
+ *   INFORMATIVA) puramente para diagnóstico.
  *   unrecognizedCitas: candidatos de cita (anotaciones FreeText) que
  *   NO matchearon el formato de fecha/hora esperado, agrupables por
  *   `signature` (patrón, no valor literal) — ver
  *   Events.handlePDFs() (events/events.js), que los sincroniza con
  *   el Centro de Mantenimiento (features/incidents/). NO afecta a
  *   `rows` de ninguna forma — es un canal de diagnóstico aparte.
+ *
+ *   NUEVO (sep-2026): `rows[].marchamos` ahora también puede incluir
+ *   valores complementados desde una anotación de Edge (ver nota de
+ *   cabecera "FIX (sep-2026) — corrección de marchamos vía anotación
+ *   de Edge" y su corrección de ancla "FIX (sep-2026) — ancla de
+ *   ENCABEZADO, no de continuación") — se fusionan al final, después
+ *   de resolver las rutas unificadas/individuales, sin ningún campo
+ *   nuevo expuesto en el objeto de retorno (el origen del valor no se
+ *   distingue hacia afuera de este módulo).
  */
-export function parsePDF({ lines, annots, citaMisses }, filename) {
+export function parsePDF({ lines, annots, citaMisses, marchamoAnnots }, filename) {
  const baseName     = filename.replace(/\.pdf$/i, '').replace(/^\d+_/, '');
 const unifiedMatch = baseName.match(/^(\d+)-(\d+)$/);
 
@@ -543,20 +999,31 @@ const rutas        = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName]
   }
   const operador = (nombre + ' ' + apellido).trim();
 
-  // Los grupos de factura/tarimas se validan por su propia forma
-  // (4659xxxxxx / dígitos) — independientes entre sí. El grupo del
-  // marchamo de encabezado ahora es \S+ OPCIONAL — ver nota de
-  // cabecera "FIX (jul-2026) — bug del marchamo ausente por
-  // completo": antes era obligatorio, así que una entrega SIN NINGÚN
-  // token de marchamo (no inválido, simplemente ausente) hacía fallar
-  // el regex COMPLETO y con él se perdían factura/tarimas/destino. La
-  // validación de formato de lo que SÍ se capture se sigue haciendo
-  // aparte en _pushMarchamo().
-  const ROW_RE  = /^CeDis\s+(?:TIENDA|HUB)\s+\S+\s+\d+\s+(4659\d{6})\s+(\d+)\s+\d+\s+\d+\s+\d+\s+[\d.]+(?:\s+(\S+))?$/;
-  // Mismo criterio para el marchamo de continuación (grupo 2, opcional):
-  // \S+ en vez de \d{5,6} — el destino (grupo 1) siempre se captura
-  // aunque el marchamo que lo acompañe sea inválido.
-  const CONT_RE = /^4659\s+(\w+)(?:\s+(\S+))?$/;
+  // Los grupos de factura/tarimas se validan por su propia forma —
+  // independientes entre sí. El grupo de factura ahora captura
+  // CUALQUIER corrida de 10 dígitos (antes exigía el prefijo "4659"
+  // dentro del regex estructural) — ver nota de cabecera "FIX
+  // (ago-2026) — factura con formato inválido no debe perder la
+  // entrega completa": si el prefijo no coincidía, el regex COMPLETO
+  // fallaba y la entrega entera desaparecía, aunque el resto de los
+  // datos fueran válidos. La validación real de la factura (formato
+  // 4659xxxxxx) se hace aparte, después de capturarla — ver
+  // _isValidFactura()/facturaIssues más abajo, mismo criterio que ya
+  // usa _pushMarchamo() para marchamos. El grupo del marchamo de
+  // encabezado sigue siendo \S+ OPCIONAL — ver nota de cabecera "FIX
+  // (jul-2026) — bug del marchamo ausente por completo".
+  const ROW_RE  = /^CeDis\s+(?:TIENDA|HUB)\s+\S+\s+\d+\s+(\d{10})\s+(\d+)\s+\d+\s+\d+\s+\d+\s+[\d.]+(?:\s+(\S+))?$/;
+  // CONT_RE — línea de continuación que trae el destino real (grupo 1).
+  // FIX (sep-2026, ver nota de cabecera "segunda factura embebida"):
+  // se agrega un grupo opcional intermedio para una SEGUNDA factura de
+  // 10 dígitos que puede venir envuelta en la misma línea cuando dos
+  // facturas comparten una sola Secuencia (ej. "4659 6154000
+  // 4659061457 144661" — destino + segunda factura + marchamo). Se
+  // exige \d{10} exacto para ese grupo — un marchamo real nunca tiene
+  // más de 6 dígitos (ver MARC_RE), así que no hay ambigüedad posible.
+  // El grupo del marchamo (ahora grupo 3) sigue siendo \S+ OPCIONAL,
+  // sin cambios de criterio respecto a antes.
+  const CONT_RE = /^4659\s+(\w+)(?:\s+(\d{10}))?(?:\s+(\S+))?$/;
   const STOP_RE = /^(Total de ordenes|Fin del informe|Walmart)/i;
   const DEST_RE = /^(?:TIENDA|HUB)\s+(\d+)\s+-\s+Zona horaria/i;
 
@@ -567,12 +1034,35 @@ const rutas        = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName]
   }
 
   const rawRows = [];
+  // NUEVO (sep-2026 — FIX ancla de marchamos de anotación, ver nota de
+  // cabecera "FIX (sep-2026) — ancla de ENCABEZADO, no de
+  // continuación"): posición real (pageNum, y) del renglón de
+  // ENCABEZADO (ROW_RE) de cada fila de la tabla de datos — donde
+  // visualmente vive la columna Marchamo (ahí es donde WTMS imprime
+  // valores como "66006" y donde el equipo pega su anotación al lado).
+  // Se captura ANTES de avanzar a la línea de continuación (que trae el
+  // destino, ~12-26pt más abajo) — medido y verificado contra un PDF
+  // real: anclar a la línea de continuación desplaza el punto de
+  // referencia lo suficiente para que la fila vecina gane la
+  // comparación de proximidad. destPositions (arriba) sigue siendo el
+  // ancla correcta para las citas — no se toca.
+  const tableRowPositions = [];
   const textLines = lines.map(l => l.text);
   let i = 0;
   while (i < textLines.length) {
     const rm = textLines[i].match(ROW_RE);
     if (rm) {
-      const factura = rm[1], tarimas = rm[2];
+      // FIX (ago-2026): ver nota de cabecera del archivo. El valor SÍ
+      // se conserva aunque el formato sea inválido — a diferencia de
+      // un marchamo inválido, vaciar la factura rompería el match
+      // específico contra el Excel sin ganar nada a cambio. Solo se
+      // registra el detalle crudo en facturaIssues para diagnóstico
+      // (ver features/validation/sve.js, regla 'bad_fact').
+      const facturaRaw = rm[1], tarimas = rm[2];
+      const factura = facturaRaw;
+      const facturaIssues = [];
+      if (!_isValidFactura(facturaRaw)) facturaIssues.push({ raw: facturaRaw });
+
       const marchamos = [], marchamoIssues = [];
 
       // Marchamo de encabezado — validado de forma independiente,
@@ -581,12 +1071,37 @@ const rutas        = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName]
       // maneja de forma segura (early return, no agrega nada).
       _pushMarchamo(rm[3], marchamos, marchamoIssues);
 
-      let destino = ''; i++;
+      let destino = '';
+      // NUEVO (sep-2026) — se guarda la posición de ESTE renglón
+      // (encabezado, ROW_RE) ANTES de avanzar i — ver nota de cabecera
+      // "FIX (sep-2026) — ancla de ENCABEZADO...".
+      const headerLine = lines[i];
+      i++;
+      // NUEVO (sep-2026) — ver nota de cabecera "segunda factura
+      // embebida". Si la línea de continuación trae una segunda
+      // factura (cm[2]), se guarda aparte para empujarla como rawRow
+      // independiente DESPUÉS del row principal (más abajo) — nunca
+      // antes, para que _dedupeByDestino()/_groupBlockByDestino()
+      // conserven factura/tarimas del ENCABEZADO (el dato completo y
+      // correcto de esta Secuencia), no los de la segunda factura.
+      let extraFacturaRow = null;
       if (i < textLines.length) {
         const cm = textLines[i].match(CONT_RE);
         if (cm) {
           destino = cm[1];
-          if (cm[2]) _pushMarchamo(cm[2], marchamos, marchamoIssues);
+          // CORREGIDO (sep-2026): ancla a headerLine (renglón de
+          // encabezado), NO a lines[i] (línea de continuación) — ver
+          // nota de cabecera "FIX (sep-2026) — ancla de ENCABEZADO...".
+          tableRowPositions.push({ destino: cm[1], pageNum: headerLine.pageNum, y: headerLine.y });
+          if (cm[2]) {
+            const raw2 = cm[2];
+            extraFacturaRow = {
+              factura: raw2, tarimas: '0', marchamos: [], marchamoIssues: [],
+              facturaIssues: _isValidFactura(raw2) ? [] : [{ raw: raw2 }],
+              destino: cm[1]
+            };
+          }
+          if (cm[3]) _pushMarchamo(cm[3], marchamos, marchamoIssues);
           i++;
         }
       }
@@ -602,70 +1117,72 @@ const rutas        = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName]
         if (MARC_CANDIDATE_RE.test(tl)) { _pushMarchamo(tl, marchamos, marchamoIssues); i++; }
         else break;
       }
-      rawRows.push({ factura, tarimas, marchamos, marchamoIssues, destino });
+      rawRows.push({ factura, tarimas, marchamos, marchamoIssues, facturaIssues, destino });
+      // NUEVO (sep-2026): se empuja DESPUÉS del row principal — ver
+      // comentario junto a la declaración de extraFacturaRow arriba.
+      if (extraFacturaRow) rawRows.push(extraFacturaRow);
     } else i++;
   }
 
+  // ── Filtro de HUBs de "ruta alterna" — NUEVO (sep-2026) ──
+  // Ver nota de cabecera "FIX (sep-2026) — HUBs de 'ruta alterna'...".
+  // Se aplica ANTES de cualquier otro cálculo (destinos, bloques por
+  // remolque, dedupe) para ambas ramas (ruta individual y unificada) —
+  // estos HUB nunca representan una entrega real, sin importar el
+  // formato accidental de su factura.
+  const filteredRawRows = rawRows.filter(r => !IGNORED_ALT_ROUTE_DESTINOS.has(r.destino));
+
   let result = [];
   if (isUnified) {
-    const destinos    = [...new Set(rawRows.map(r => r.destino).filter(Boolean))];
-    const sameDestino = destinos.length <= 1;
-    if (sameDestino) {
-      // FIX (ago-2026) — ver nota de cabecera "bug del reparto
-      // desigual de marchamos". Se reemplaza el corte por conteo
-      // (mid = mitad de filas) por un corte basado en dónde WTMS
-      // realmente imprime el marchamo de cada remolque — la única
-      // señal fiable de "aquí empieza un bloque nuevo" cuando ambas
-      // rutas comparten destino y pueden traer un número distinto de
-      // entregas cada una.
-      const blocks = _splitUnifiedBlocksByMarchamo(rawRows);
-      let grupos;
-      if (blocks.length === 2) {
-        grupos = blocks;
-      } else {
-        // Respaldo — no se detectaron exactamente 2 bloques por
-        // marchamo (ej. ninguna fila trae marchamo en absoluto, o un
-        // patrón inesperado). Se conserva el corte por mitad como
-        // antes — nunca peor que el comportamiento previo — con aviso
-        // en consola para diagnóstico manual.
-        console.warn(`[PDF] ${baseName}: se esperaban 2 bloques por remolque (detección por marchamo) pero se detectaron ${blocks.length} — usando corte por mitad como respaldo.`);
-        const mid = Math.ceil(rawRows.length / 2);
-        grupos = [rawRows.slice(0, mid), rawRows.slice(mid)];
-      }
-
-      // Orden de asignación — confirmado con EduarDo (caso real
-      // 1205-1206.pdf): WTMS imprime de arriba hacia abajo primero el
-      // bloque de la ruta con número MAYOR, después el de número
-      // MENOR. `rutas` conserva el orden literal del nombre del
-      // archivo (no necesariamente ascendente), así que se ordena
-      // explícitamente por valor numérico antes de repartir.
-      const rutasPorMagnitud = [...rutas].sort((a, b) => parseInt(b, 10) - parseInt(a, 10));
-
-      rutasPorMagnitud.forEach((ruta, idx) => {
-        const grupo = grupos[idx] || [];
-        if (!grupo.length) return;
-        const marchamos      = [...new Set(grupo.flatMap(r => r.marchamos))];
-        const marchamoIssues = grupo.flatMap(r => r.marchamoIssues || []);
-        const tarimas   = String(grupo.reduce((s, r) => s + (parseInt(r.tarimas, 10) || 0), 0));
-        result.push({ ruta, operador, destino: grupo[0].destino, factura: grupo[0].factura, tarimas, marchamos, marchamoIssues, cita: '', hrDespacho });
-      });
+    // ── Generalizado (sep-2026) — ver nota de cabecera "FIX (sep-2026)
+    // — generalización de rutas unificadas con destinos distintos".
+    // Ya no se bifurca por sameDestino: SIEMPRE se divide por remolque
+    // primero, luego se agrupa por destino DENTRO de cada bloque ya
+    // asignado a su ruta real. Un bloque con un solo destino se
+    // comporta igual que antes; un bloque con destinos distintos ahora
+    // genera una entrega por cada uno, con la ruta correcta.
+    const blocks = _splitUnifiedBlocksByMarchamo(filteredRawRows);
+    let grupos;
+    if (blocks.length === 2) {
+      grupos = blocks;
     } else {
-      // NUEVO (jul-2026) — destinos distintos dentro de un PDF unificado
-      // también pueden repetirse físicamente (ej. un HUB entre varias
-      // entregas normales de las dos rutas) — mismo criterio que la
-      // rama de ruta individual, ver _dedupeByDestino().
-      const deduped = _dedupeByDestino(rawRows);
-      for (const r of deduped) {
-        result.push({ ruta: baseName, operador, destino: r.destino, factura: r.factura, tarimas: r.tarimas, marchamos: r.marchamos, marchamoIssues: r.marchamoIssues || [], cita: '', hrDespacho });
-      }
+      // Respaldo — no se detectaron exactamente 2 bloques por
+      // marchamo (ej. ninguna fila trae marchamo en absoluto, o un
+      // patrón inesperado). Se conserva el corte por mitad como
+      // antes — nunca peor que el comportamiento previo — con aviso
+      // en consola para diagnóstico manual.
+      console.warn(`[PDF] ${baseName}: se esperaban 2 bloques por remolque (detección por marchamo) pero se detectaron ${blocks.length} — usando corte por mitad como respaldo.`);
+      const mid = Math.ceil(filteredRawRows.length / 2);
+      grupos = [filteredRawRows.slice(0, mid), filteredRawRows.slice(mid)];
     }
+
+    // Orden de asignación — confirmado con EduarDo (caso real
+    // 1205-1206.pdf): WTMS imprime de arriba hacia abajo primero el
+    // bloque de la ruta con número MAYOR, después el de número
+    // MENOR. `rutas` conserva el orden literal del nombre del
+    // archivo (no necesariamente ascendente), así que se ordena
+    // explícitamente por valor numérico antes de repartir.
+    const rutasPorMagnitud = [...rutas].sort((a, b) => parseInt(b, 10) - parseInt(a, 10));
+
+    rutasPorMagnitud.forEach((ruta, idx) => {
+      const grupo = grupos[idx] || [];
+      if (!grupo.length) return;
+      // NUEVO (sep-2026): un bloque puede traer una o más entregas
+      // (destinos) reales — se agrupa por destino DENTRO del bloque ya
+      // asignado a esta ruta (nunca a través de bloques distintos, eso
+      // mezclaría datos de dos rutas). Ver _groupBlockByDestino().
+      const entregas = _groupBlockByDestino(grupo);
+      entregas.forEach(e => {
+        result.push({ ruta, operador, destino: e.destino, factura: e.factura, tarimas: e.tarimas, marchamos: e.marchamos, marchamoIssues: e.marchamoIssues, facturaIssues: e.facturaIssues, cita: '', hrDespacho });
+      });
+    });
   } else {
     // NUEVO (jul-2026) — ruta individual: un HUB repetido físicamente en
     // el PDF es UNA sola entrega real — ver _dedupeByDestino(), nota de
     // cabecera "FIX (jul-2026) — falso positivo por HUB repetido".
-    const deduped = _dedupeByDestino(rawRows);
+    const deduped = _dedupeByDestino(filteredRawRows);
     for (const r of deduped) {
-      result.push({ ruta: rutas[0], operador, destino: r.destino, factura: r.factura, tarimas: r.tarimas, marchamos: r.marchamos, marchamoIssues: r.marchamoIssues || [], cita: '', hrDespacho });
+      result.push({ ruta: rutas[0], operador, destino: r.destino, factura: r.factura, tarimas: r.tarimas, marchamos: r.marchamos, marchamoIssues: r.marchamoIssues || [], facturaIssues: r.facturaIssues || [], cita: '', hrDespacho });
     }
   }
 
@@ -675,6 +1192,31 @@ const rutas        = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName]
       if (!best) continue;
       const citaRows = result.filter(r => r.destino === best.destino && !r.cita);
       for (const row of citaRows) row.cita = ann.cita;
+    }
+  }
+
+  // ── NUEVO (sep-2026 — corrección de marchamos vía anotación de
+  // Edge) — ver nota de cabecera "FIX (sep-2026) — corrección de
+  // marchamos..." y su corrección de ancla "FIX (sep-2026) — ancla de
+  // ENCABEZADO...". Se aplica DESPUÉS de resolver rutas unificadas/
+  // individuales, así que nunca interfiere con la partición por
+  // remolque ni con el agrupado por destino. Usa `tableRowPositions`
+  // (posición del renglón de ENCABEZADO), NO `destPositions` (bloques
+  // descriptivos "Entrega N", lejos de donde el equipo anota) ni la
+  // línea de continuación (verificado incorrecto contra un PDF real —
+  // ver nota de cabecera) — deliberadamente SIN fallback a
+  // destPositions si tableRowPositions sale vacío: mejor no aplicar
+  // nada (incidencia 'no_march' visible para revisión) que aplicar con
+  // un ancla que ya se demostró incorrecta. La fusión NUNCA reemplaza
+  // un marchamo ya presente — ver _mergeAnnotationMarchamos().
+  if (marchamoAnnots && marchamoAnnots.length && tableRowPositions.length) {
+    for (const ma of marchamoAnnots) {
+      const best = _nearestDestino(ma, tableRowPositions);
+      if (!best) continue;
+      const rows = result.filter(r => r.destino === best.destino);
+      for (const row of rows) {
+        _mergeAnnotationMarchamos(row.marchamos, ma.marchamos);
+      }
     }
   }
 

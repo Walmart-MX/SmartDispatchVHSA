@@ -10,8 +10,7 @@
  *   su contenido se redistribuyó a sus pantallas definitivas (ver
  *   índice más abajo). goStep()/renderStepper() vuelven a su forma
  *   simple: togglear .screen y, si el id pertenece a STEPS (los 5
- *   pasos numerados — Administración queda fuera del flujo, se accede
- *   por su propio botón en el topbar), actualizar el indicador.
+ *   pasos numerados), actualizar el indicador.
  *
  *   Dónde quedó cada pieza de #legacyPanel:
  *     - Botón de exportar (antes btnExport/btnExport2 duplicados) →
@@ -106,8 +105,52 @@
  *        siempre, desde la cabecera, sin esperar a que no queden
  *        incidencias pendientes.
  *
+ * CAMBIO (ago-2026 — "reabrir para corregir"):
+ *   Se agrega el listener de #btnHistoryReopen, junto al de
+ *   #btnHistoryRedownload — reutiliza Events._currentHistorySession
+ *   (mismo dato ya fijado por selectHistorySession()/
+ *   previewTodaySession()). Llama a Events.reopenSession(), cierra el
+ *   modal de Historial y navega a Correcciones (goStep('fix')) para
+ *   que el usuario continúe corrigiendo de inmediato. Ver
+ *   events/events.js (reopenSession()/checkSources()) y ui/ui.js
+ *   (renderFixList(), aviso contextual) para el resto del mecanismo.
+ *
+ * CAMBIO (ago-2026 — login como primera vista, sin "flash" de la app):
+ *   La app entera (.shell) queda oculta por CSS hasta que
+ *   <body> tenga la clase 'app-authed' (ver regla en index.html:
+ *   body:not(.app-authed) .shell{display:none!important}). Se agrega
+ *   document.body.classList.add('app-authed') en los TRES puntos donde
+ *   ya se decidía "el usuario está autenticado, mostrar la app":
+ *     1) init() → rama Auth.restoreSession() exitosa (sesión ya
+ *        vigente en esta terminal, no requiere overlay de login)
+ *     2) afterLoginSuccess() → login normal completado
+ *     3) el submit handler de authFormProfile → primer login,
+ *        tras confirmar perfil
+ *   NO se toca la lógica de Auth/RPCs en absoluto — es un cambio
+ *   puramente de visibilidad, complementario a UI.hideAuthOverlay()
+ *   (que ya se llamaba en los mismos 3 puntos, salvo el 1, donde el
+ *   overlay nunca llegó a mostrarse).
+ *
+ * CAMBIO (ago-2026 — cerrar el modal de configuración de usuario):
+ *   UI.closeModal() ya existía pero no tenía ningún disparador en el
+ *   DOM. Se agregan dos listeners nuevos, mismo patrón que
+ *   #historyModalOverlay: click en el botón "×" (#btnCfgClose) y click
+ *   en el "Cancelar" (#btnCfgCancel) → UI.closeModal(); click en el
+ *   overlay FUERA de .modal-box (mismo filtro e.target === overlay que
+ *   ya usan warnModalOverlay/routePickerOverlay/historyModalOverlay) →
+ *   UI.closeModal(). No se toca el guardado (#nameModalBtn) en
+ *   absoluto.
+ *
+ * CAMBIO (ago-2026 — validación informativa Excel vs PDF en
+ * Preparación):
+ *   Se agrega el listener de #btnScToggle → UI.toggleSourceCheckDetail()
+ *   (ver ui.js/features/source-check.js). Simple toggle de visibilidad,
+ *   sin ninguna llamada a Events — la tarjeta ya se actualiza sola
+ *   desde Events.triggerMerge().
+ *
  * Dependencias: todos los módulos de la aplicación.
  */
+import { Auth } from '../features/auth.js';
 import { State } from './state.js';
 import { UI, _setEvents } from '../ui/ui.js';
 import { Events } from '../events/events.js';
@@ -219,21 +262,218 @@ function wireCatalogAdmin(catalogId, containerId) {
 /**
  * Inicializa la aplicación completa.
  */
+let _activityWired = false;
+let _pendingFirstLoginPassword = null;
+// NUEVO — protección simple del panel Administración → Usuarios.
+// Cortina de acceso, NO seguridad real (ver nota abajo): el panel de
+// gestión de cuentas es sensible pero de bajo tráfico — un prompt()
+// basta para evitar accesos accidentales o de personal no autorizado
+// casual. Se desbloquea una sola vez por sesión de navegador (no
+// persiste en localStorage — recargar vuelve a pedirla).
+let _usersPanelUnlocked = false;
+const USERS_PANEL_PASSWORD = 'rainmeter99';
+
+function wireActivityTracking() {
+  if (_activityWired) return;
+  _activityWired = true;
+  ['click', 'keydown'].forEach(evt => document.addEventListener(evt, () => Auth.touchActivity()));
+}
+
+function handleSessionExpired() {
+  const known = Auth.getKnownUser();
+  UI.showAuthKnown(known ? `${Auth.greeting()}, ${known.displayName}` : '—');
+}
+
+async function afterLoginSuccess(result) {
+  if (result.isFirstLogin) {
+    UI.showAuthProfile({ displayName: result.user.displayName, captureName: result.user.captureName });
+    return;
+  }
+  _pendingFirstLoginPassword = null;
+  UI.setUser(State.currentUser);
+  _revealAppWithTransition();
+  Auth.startExpiryWatch(handleSessionExpired);
+  wireActivityTracking();
+  await continueInit();
+}
+const AUTH_ERROR_MESSAGES = {
+  user_not_found:     { title:'Usuario no encontrado',        body:'Tu usuario no se encuentra dado de alta. Contacta al administrador para solicitar tu alta.' },
+  invalid_password:   { title:'Contraseña incorrecta',         body:'Verifica tu contraseña e intenta nuevamente.' },
+  invalid_credentials:{ title:'Usuario o contraseña incorrectos', body:'Verifica tu usuario y tu contraseña e intenta nuevamente.' },
+  inactive:           { title:'Cuenta inactiva',               body:'Esta cuenta está desactivada. Contacta al administrador para reactivarla.' },
+  network:            { title:'Sin conexión',                  body:'No se pudo conectar con el servidor. Verifica tu conexión e intenta de nuevo.' },
+  generic:            { title:'No se pudo iniciar sesión',     body:'Verifica tus datos e intenta nuevamente.' }
+};
+
+function _setAuthError(elId, code) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (!code) { el.innerHTML = ''; return; }
+  const msg = AUTH_ERROR_MESSAGES[code] || AUTH_ERROR_MESSAGES.generic;
+  el.innerHTML = `<strong>${msg.title}</strong><span>${msg.body}</span>`;
+}
+
+function _setAuthButtonState(form, state) {
+  const btn = form.querySelector('button[type="submit"]');
+  if (!btn) return;
+  if (state === 'loading') {
+    btn.dataset.origText = btn.dataset.origText || btn.textContent;
+    btn.disabled = true;
+    btn.classList.remove('auth-success');
+    btn.innerHTML = '<span class="auth-spinner"></span>Iniciando sesión…';
+  } else if (state === 'success') {
+    btn.disabled = true;
+    btn.classList.add('auth-success');
+    btn.textContent = '✓ ¡Bienvenido!';
+  } else {
+    btn.disabled = false;
+    btn.classList.remove('auth-success');
+    if (btn.dataset.origText) btn.textContent = btn.dataset.origText;
+  }
+}
+
+function _revealAppWithTransition() {
+  const overlay = document.getElementById('authOverlay');
+  overlay.classList.add('authOverlay-leaving');
+  setTimeout(() => {
+    UI.hideAuthOverlay();
+    overlay.classList.remove('authOverlay-leaving');
+    document.body.classList.add('app-authed');
+  }, 280);
+}
+
+let _authSubmitting = false;
+
+function wireAuthForms() {
+  document.getElementById('authFormKnown').addEventListener('submit', async e => {
+    e.preventDefault();
+    if (_authSubmitting) return;
+    const known  = Auth.getKnownUser();
+    const pass   = document.getElementById('authKnownPassword').value;
+    document.getElementById('authKnownError').innerHTML = '';
+    _authSubmitting = true;
+    _setAuthButtonState(e.target, 'loading');
+    const result = await Auth.login(known.username, pass);
+    if (!result.ok) {
+      _authSubmitting = false;
+      _setAuthButtonState(e.target, 'idle');
+      _setAuthError('authKnownError', result.error);
+      return;
+    }
+    _setAuthButtonState(e.target, 'success');
+    _pendingFirstLoginPassword = pass;
+    await afterLoginSuccess(result);
+    _authSubmitting = false;
+  });
+
+  document.getElementById('authChangeUser').addEventListener('click', () => {
+    Auth.changeUser();
+    UI.showAuthFull();
+  });
+
+  document.getElementById('authFormFull').addEventListener('submit', async e => {
+    e.preventDefault();
+    if (_authSubmitting) return;
+    const user  = document.getElementById('authFullUsername').value.trim();
+    const pass  = document.getElementById('authFullPassword').value;
+    const errEl = document.getElementById('authFullError');
+    errEl.innerHTML = '';
+    if (!user || !pass) { errEl.innerHTML = '<strong>Completa usuario y contraseña.</strong>'; return; }
+    _authSubmitting = true;
+    _setAuthButtonState(e.target, 'loading');
+    const result = await Auth.login(user, pass);
+    if (!result.ok) {
+      _authSubmitting = false;
+      _setAuthButtonState(e.target, 'idle');
+      _setAuthError('authFullError', result.error);
+      return;
+    }
+    _setAuthButtonState(e.target, 'success');
+    _pendingFirstLoginPassword = pass;
+    await afterLoginSuccess(result);
+    _authSubmitting = false;
+  });
+
+  document.getElementById('authFormProfile').addEventListener('submit', async e => {
+    e.preventDefault();
+    if (_authSubmitting) return;
+    const displayName = document.getElementById('authProfileDisplay').value.trim();
+    const captureName = document.getElementById('authProfileCapture').value.trim();
+    const newPass      = document.getElementById('authProfileNewPassword').value;
+    const errEl        = document.getElementById('authProfileError');
+    errEl.textContent = '';
+    if (!displayName || !captureName) { errEl.textContent = 'Completa ambos campos.'; return; }
+
+    _authSubmitting = true;
+    _setAuthButtonState(e.target, 'loading');
+
+    const currentPass = _pendingFirstLoginPassword;
+    const profResult  = await Auth.updateProfile(currentPass, displayName, captureName);
+    if (!profResult.ok) {
+      _authSubmitting = false;
+      _setAuthButtonState(e.target, 'idle');
+      errEl.textContent = 'No se pudo guardar tu perfil — intenta de nuevo.';
+      return;
+    }
+    if (newPass) {
+      const pwResult = await Auth.changePassword(currentPass, newPass);
+      if (!pwResult.ok) errEl.textContent = 'Perfil guardado, pero no se pudo cambiar la contraseña.';
+    }
+    _pendingFirstLoginPassword = null;
+    UI.setUser(State.currentUser);
+    _setAuthButtonState(e.target, 'success');
+    _revealAppWithTransition();
+    Auth.startExpiryWatch(handleSessionExpired);
+    wireActivityTracking();
+    await continueInit();
+    _authSubmitting = false;
+  });
+}
+
+/**
+ * Punto de entrada real. wireAuthForms() se engancha SIEMPRE, haya o no
+ * sesión — el resto del bootstrap (continueInit) solo corre tras login
+ * exitoso o sesión restaurada (login bloqueante, ver propuesta §17).
+ */
 export async function init() {
-  // ── Resolver dependencias circulares ──
   _setRoutePicker(RoutePicker);
   _setEvents(Events);
   _setWarnModalEvents(Events);
 
-  // ── Theme & User ──
   UI.applyTheme(State.theme);
-  UI.setUser(State.user);
+  wireAuthForms();
 
-  // ── Stepper ──
+  if (Auth.restoreSession()) {
+    UI.setUser(State.currentUser);
+    // NUEVO (ago-2026 — login como primera vista): sesión ya vigente en
+    // esta terminal — el overlay de login nunca llega a mostrarse, pero
+    // .shell seguía oculto por CSS hasta este punto (ver regla nueva en
+    // index.html). Se revela aquí, antes de continueInit(), para que la
+    // app aparezca de inmediato sin esperar ningún dato de red.
+    document.body.classList.add('app-authed');
+    Auth.startExpiryWatch(handleSessionExpired);
+    wireActivityTracking();
+    await continueInit();
+    return;
+  }
+
+  const known = Auth.getKnownUser();
+  if (known) UI.showAuthKnown(`${Auth.greeting()}, ${known.displayName}`);
+  else       UI.showAuthFull();
+  // continueInit() se dispara desde wireAuthForms() tras login exitoso.
+}
+
+/**
+ * Bootstrap completo de la aplicación — antes vivía como el cuerpo de
+ * init(). Se extrae sin cambios de comportamiento salvo los señalados:
+ * ya no llama UI.applyTheme/UI.setUser(String) (resuelto antes de
+ * llegar aquí) y el nameInput/first-run modal de nombre libre se
+ * retiran (reemplazados por el flujo de auth de arriba).
+ */
+async function continueInit() {
   renderStepper();
   document.getElementById('btnAdmin').addEventListener('click', () => goStep('admin'));
 
-  // ── Load FactCache from Supabase (Camino B, Fase 2) ──
   State.factCache    = await FactCache.load();
   State.factCacheLog = await FactCache.loadLog();
   const fcStats = FactCache.stats();
@@ -242,52 +482,78 @@ export async function init() {
   }
   UI.renderCacheHistory();
 
-  // ── Drop zones (4 fuentes obligatorias) ──
   Events.setupDrop('dropPDF', 'filePDF', Events.handlePDFs.bind(Events));
   Events.setupDrop('dropXLS', 'fileXLS', Events.handleXLS.bind(Events));
   Events.setupDrop('dropWTMS', 'fileWTMS', Events.handleWTMS.bind(Events));
 
-  // ── Preparación — "Continuar" y "Reemplazar archivos" (vista contraída) ──
-  // CAMBIO (jul-2026 — Etapa 4): navega directo a Correcciones
-  // (goStep('fix')) en vez de a Mesa de Trabajo — ver nota de cabecera
-  // "CAMBIO (jul-2026 — simplificación del flujo, Etapa 4)". El id del
-  // botón se conserva (btnGoTable) para no tocar index.html más de lo
-  // necesario; su texto visible ya se actualizó ahí a "Continuar a
-  // Correcciones →".
   document.getElementById('btnGoTable').addEventListener('click', () => goStep('fix'));
   document.getElementById('btnPrepReset').addEventListener('click', () => UI.resetAll());
 
-  // ── Status de despacho (paste) ──
   document.getElementById('btnParse').addEventListener('click',      () => Events.handlePaste());
   document.getElementById('btnPasteClear').addEventListener('click', () => Events.clearPaste());
 
-  // ── Exportación ──
+  // NUEVO (ago-2026 — validación Excel vs PDF): simple toggle de
+  // visibilidad del detalle de diferencias — la tarjeta en sí ya se
+  // actualiza sola desde Events.triggerMerge(), este listener no llama
+  // a Events en absoluto.
+  document.getElementById('btnScToggle')?.addEventListener('click', () => UI.toggleSourceCheckDetail());
+
   document.getElementById('btnExport').addEventListener('click', () => Events.handleExport());
 
-  // ── Theme toggle ──
   document.getElementById('btnTheme').addEventListener('click', () =>
     UI.applyTheme(State.theme === 'dark' ? 'light' : 'dark'));
 
-  // ── Modal — theme options ──
   document.querySelectorAll('.theme-opt[data-theme]').forEach(el => {
     el.addEventListener('click', () => UI.applyTheme(el.dataset.theme));
   });
 
-  // ── User chip ──
-  document.getElementById('tbUser').addEventListener('click', () => UI.openModal('settings'));
+  document.getElementById('tbUser').addEventListener('click', () => UI.openModal());
 
-  // ── Modal save button ──
-  document.getElementById('nameModalBtn').addEventListener('click', () => {
-    const name = document.getElementById('nameInput').value.trim() || State.user;
-    UI.closeModal(name);
+  // ── Configuración — Mi cuenta (reemplaza el guardado de nombre libre) ──
+  document.getElementById('nameModalBtn').addEventListener('click', async () => {
+    const displayName     = document.getElementById('cfgDisplayName').value.trim();
+    const captureName     = document.getElementById('cfgCaptureName').value.trim();
+    const currentPassword = document.getElementById('cfgCurrentPassword').value;
+    const newPassword     = document.getElementById('cfgNewPassword').value;
+    const statusEl = document.getElementById('cfgStatus');
+
+    if (!displayName || !captureName) {
+      statusEl.textContent = 'Completa nombre y nombre en CAPTURA.'; statusEl.style.color = 'var(--red)'; return;
+    }
+    if (!currentPassword) {
+      statusEl.textContent = 'Ingresa tu contraseña actual para guardar cambios.'; statusEl.style.color = 'var(--red)'; return;
+    }
+    statusEl.textContent = 'Guardando…'; statusEl.style.color = '';
+
+    const profResult = await Auth.updateProfile(currentPassword, displayName, captureName);
+    if (!profResult.ok) {
+      statusEl.textContent = profResult.error === 'invalid_password' ? 'Contraseña actual incorrecta.' : 'No se pudo guardar.';
+      statusEl.style.color = 'var(--red)';
+      return;
+    }
+    if (newPassword) {
+      const pwResult = await Auth.changePassword(currentPassword, newPassword);
+      if (!pwResult.ok) {
+        statusEl.textContent = 'Nombre guardado, pero no se pudo cambiar la contraseña.'; statusEl.style.color = 'var(--amber-deep)'; return;
+      }
+    }
+    UI.setUser(State.currentUser);
+    statusEl.textContent = '✓ Cambios guardados'; statusEl.style.color = 'var(--green)';
+    document.getElementById('cfgCurrentPassword').value = '';
+    document.getElementById('cfgNewPassword').value     = '';
   });
 
-  // ── Enter key en name input ──
-  document.getElementById('nameInput').addEventListener('keydown', e => {
-    if (e.key === 'Enter') document.getElementById('nameModalBtn').click();
+  // ── NUEVO (ago-2026 — cerrar el modal de configuración de usuario) ──
+  // UI.closeModal() ya existía pero no tenía ningún disparador en el
+  // DOM. Mismo patrón que #historyModalOverlay/#warnModalOverlay/
+  // #routePickerOverlay: botón "×", botón "Cancelar" y click en el
+  // overlay fuera de .modal-box — ninguno guarda cambios.
+  document.getElementById('btnCfgClose')?.addEventListener('click', () => UI.closeModal());
+  document.getElementById('btnCfgCancel')?.addEventListener('click', () => UI.closeModal());
+  document.getElementById('nameModal').addEventListener('click', e => {
+    if (e.target === document.getElementById('nameModal')) UI.closeModal();
   });
 
-  // ── Mesa de Trabajo — búsqueda y filtros ──
   document.getElementById('tableSearch').addEventListener('input', e => UI.setTableSearch(e.target.value));
   document.getElementById('filterChips').addEventListener('click', e => {
     const btn = e.target.closest('.fchip');
@@ -295,24 +561,16 @@ export async function init() {
     UI.setTableFilter(btn.dataset.filter);
   });
 
-  // ── Mesa de Trabajo — botón de editar por fila ──
   document.getElementById('mainTbody').addEventListener('click', e => {
     const btn = e.target.closest('.row-edit-btn');
     if (!btn) return;
     EditSystem.locateAndEdit(btn.dataset.editRuta, '', JSON.stringify([btn.dataset.editRowid]));
   });
 
-  // ── Ir a Correcciones (botón en el header de Mesa de Trabajo) ──
   const btnGoFix = document.getElementById('btnGoFix');
   if (btnGoFix) btnGoFix.addEventListener('click', () => goStep('fix'));
 
-  // ── Correcciones — tarjetas de corrección rápida, confirmación y "Revisar" ──
   const handleFixCardClick = e => {
-    // NUEVO (jul-2026) — ver nota de cabecera "CAMBIO (jul-2026 —
-    // confirmación de entregas sin PDF...)". Debe ir ANTES del check de
-    // saveBtn: .fix-confirm-btn vive en la misma tarjeta que
-    // .fix-review-btn (ver ui.js → _fixCardConfirm()), así que el orden
-    // de los closest() importa para no confundirlos.
     const confirmBtn = e.target.closest('.fix-confirm-btn');
     if (confirmBtn) {
       const ruta  = confirmBtn.dataset.confirmRuta;
@@ -321,17 +579,13 @@ export async function init() {
       Events.confirmExcludedDette(ruta, dette);
       return;
     }
-    // NUEVO (jul-2026) — ver nota de cabecera "CAMBIO (jul-2026 —
-    // captura dinámica de hasta 5 marchamos)". Los tres checks de la
-    // tarjeta .fix-card-marchamo van ANTES de .fix-save/.fix-review-btn
-    // por prolijidad, aunque no colisionan (clases CSS distintas).
     const addMarchBtn = e.target.closest('[data-fix-role="add-marchamo"]');
     if (addMarchBtn) {
       const card     = addMarchBtn.closest('.fix-card-marchamo');
       const rowsWrap = card.querySelector('[data-fix-role="rows"]');
       const slots    = JSON.parse(card.dataset.fixSlots || '[]');
       const current  = rowsWrap.querySelectorAll('.fix-marchamo-row').length;
-      if (current >= slots.length) return; // ya se alcanzó el máximo de slots vacíos disponibles
+      if (current >= slots.length) return;
       const nextSlot = slots[current];
       const row = document.createElement('div');
       row.className = 'fix-marchamo-row';
@@ -348,8 +602,6 @@ export async function init() {
     if (removeMarchBtn) {
       const card = removeMarchBtn.closest('.fix-card-marchamo');
       removeMarchBtn.closest('.fix-marchamo-row').remove();
-      // Al liberar un slot, el botón "+ Agregar" (si estaba
-      // deshabilitado por haber llegado al máximo) vuelve a habilitarse.
       const addBtn = card.querySelector('[data-fix-role="add-marchamo"]');
       if (addBtn) addBtn.disabled = false;
       return;
@@ -359,15 +611,8 @@ export async function init() {
       const card   = saveMarchBtn.closest('.fix-card-marchamo');
       const inputs = card.querySelectorAll('.fix-marchamo-input');
       const fields = {};
-      inputs.forEach(inp => {
-        const val = inp.value.trim();
-        if (val) fields[inp.dataset.field] = val;
-      });
+      inputs.forEach(inp => { const val = inp.value.trim(); if (val) fields[inp.dataset.field] = val; });
       if (!Object.keys(fields).length) {
-        // Ningún campo capturado — no hay nada que guardar. Se marca el
-        // primer input como pista visual (mismo patrón que fix-input-
-        // error de la tarjeta quick), sin bloquear ni exigir un mínimo:
-        // los campos siguen siendo opcionales, esto es solo feedback.
         const first = card.querySelector('.fix-marchamo-input');
         if (first) { first.focus(); first.classList.add('fix-input-error'); }
         return;
@@ -393,53 +638,36 @@ export async function init() {
   document.getElementById('fixList').addEventListener('click', handleFixCardClick);
   document.getElementById('fixInfoList').addEventListener('click', handleFixCardClick);
 
-  // ── Correcciones — "Todo corregido" → Dashboard de Calidad (alias) ──
   const btnGoQuality = document.getElementById('btnGoQuality');
   if (btnGoQuality) btnGoQuality.addEventListener('click', () => goStep('quality'));
-
-  // ── Correcciones — acceso SIEMPRE visible a Calidad desde la
-  // cabecera (NUEVO, jul-2026 — Etapa 4). Mismo destino que
-  // #btnGoQuality de arriba, pero sin esperar a que no queden
-  // incidencias pendientes — ver nota de cabecera "CAMBIO (jul-2026 —
-  // simplificación del flujo, Etapa 4)". ──
   document.getElementById('btnGoQualityHeader')?.addEventListener('click', () => goStep('quality'));
-
-  // ── Correcciones — "Continuar a Exportación" tricolor (NUEVO, jul-2026) ──
-  // Ver nota de cabecera. Nunca bloquea la navegación — solo informa el
-  // estado; el gate real de exportación sigue viviendo en la pantalla
-  // Exportación, sin cambios.
   document.getElementById('btnFixContinue')?.addEventListener('click', () => goStep('export'));
 
-  // ── Exportación — modal de celebración ──
   document.getElementById('btnCelebrateClose')?.addEventListener('click', () => {
     UI.hideCelebrate();
     goStep('prep');
   });
 
-  // ── Administración — navegación entre sub-paneles (Pool Real,
-  // Ventana de Recibo, Licencias, Caché de facturas, Centro de
-  // Mantenimiento, Historial, Configuración). Reemplaza los acordeones
-  // .cat-toggle y las pestañas .ref-tabs de las fases anteriores — ver
-  // nota de cabecera. ──
-  document.getElementById('adminNav').addEventListener('click', e => {
-    // NUEVO (jul-2026 — Etapa 4): botones con [data-admin-goto] son
-    // ACCESOS DIRECTOS a otra pantalla completa (ej. Mesa de Trabajo),
-    // no un sub-panel de Administración — se resuelven ANTES del
-    // toggle genérico de abajo, que asume que todo botón de esta barra
-    // activa un .admin-panel dentro de la misma pantalla. Ver nota de
-    // cabecera "CAMBIO (jul-2026 — simplificación del flujo, Etapa 4)".
+    document.getElementById('adminNav').addEventListener('click', e => {
     const gotoBtn = e.target.closest('[data-admin-goto]');
     if (gotoBtn) { goStep(gotoBtn.dataset.adminGoto); return; }
 
     const btn = e.target.closest('.admin-nav-item');
     if (!btn) return;
+
+    // NUEVO — gate de contraseña para el panel Usuarios. Ver nota de
+    // cabecera junto a _usersPanelUnlocked/USERS_PANEL_PASSWORD.
+    if (btn.dataset.admin === 'users' && !_usersPanelUnlocked) {
+      const pass = prompt('Este panel está protegido. Ingresa la contraseña para continuar:');
+      if (pass === null) return; // canceló — no hace nada, no cambia de panel
+      if (pass !== USERS_PANEL_PASSWORD) { alert('Contraseña incorrecta.'); return; }
+      _usersPanelUnlocked = true;
+    }
+
     document.querySelectorAll('.admin-nav-item').forEach(b => b.classList.toggle('active', b === btn));
     document.querySelectorAll('.admin-panel').forEach(p => p.classList.toggle('active', p.dataset.adminPanel === btn.dataset.admin));
-    // Centro de Mantenimiento (Fase 2, jul-2026) — se refresca cada vez
-    // que se entra al panel, mismo criterio que Historial
-    // (Events.openHistory()): datos pueden haber cambiado desde la
-    // última corrida de merge, mejor traerlos frescos que cachear.
     if (btn.dataset.admin === 'maint') Events.loadMaintenanceCenter();
+    if (btn.dataset.admin === 'users') refreshUsersAdmin();
   });
   document.getElementById('mcVentanaFile').addEventListener('change', function() {
     Events.importMasterCatalog('ventanaRecibo', this.files[0]); this.value = '';
@@ -448,12 +676,9 @@ export async function init() {
     Events.importMasterCatalog('poolReal', this.files[0]); this.value = '';
   });
 
-  // ── Administración — Ventana de Recibo / Pool Real, alta y baja fila
-  // por fila (NUEVO, jul-2026) — ver wireCatalogAdmin() arriba. ──
   wireCatalogAdmin('ventanaRecibo', 'mcVentanaAdmin');
   wireCatalogAdmin('poolReal', 'mcPoolAdmin');
 
-  // ── Administración — Licencias (catálogo de operadores) ──
   document.getElementById('btnCatAdd').addEventListener('click',     () => Events.addCatalogEntry());
   document.getElementById('catLicInput').addEventListener('keydown', e => {
     if (e.key === 'Enter') Events.addCatalogEntry();
@@ -467,10 +692,42 @@ export async function init() {
     Events.delOp(btn.dataset.delOp);
   });
 
-  // ── Administración — Centro de Mantenimiento (Fase 2, jul-2026) ──
-  // Resolver una incidencia individual, delegado sobre la tabla —
-  // mismo patrón que #catTbody/#mainTbody (las filas se regeneran en
-  // cada render, un solo listener en el contenedor cubre todas). ──
+  // ── Administración — Usuarios (NUEVO) ──
+  document.getElementById('btnUserAdd').addEventListener('click', async () => {
+    const username    = document.getElementById('userUsernameInput').value.trim();
+    const password    = document.getElementById('userPasswordInput').value;
+    const displayName = document.getElementById('userDisplayInput').value.trim();
+    const captureName = document.getElementById('userCaptureInput').value.trim();
+    if (!username || !password || !displayName || !captureName) {
+      UI.setUsersStatus('Completa todos los campos.', 'err'); return;
+    }
+    UI.setUsersStatus('Creando…', 'ok');
+    const result = await Auth.adminCreateUser(username, password, displayName, captureName);
+    if (!result.ok) {
+      UI.setUsersStatus(result.error === 'duplicate_username' ? 'Ese usuario ya existe.' : 'Error al crear usuario', 'err');
+      return;
+    }
+    ['userUsernameInput','userPasswordInput','userDisplayInput','userCaptureInput'].forEach(id => document.getElementById(id).value = '');
+    UI.setUsersStatus('✓ Usuario creado', 'ok');
+    await refreshUsersAdmin();
+  });
+  document.getElementById('usersTbody').addEventListener('click', async e => {
+    const toggleBtn = e.target.closest('[data-user-toggle]');
+    if (toggleBtn) {
+      const active = toggleBtn.dataset.userToggle === 'activate';
+      await Auth.adminSetActive(toggleBtn.dataset.userId, active);
+      await refreshUsersAdmin();
+      return;
+    }
+    const resetBtn = e.target.closest('[data-user-reset]');
+    if (resetBtn) {
+      const newPass = prompt('Nueva contraseña temporal para este usuario:');
+      if (!newPass) return;
+      await Auth.adminResetPassword(resetBtn.dataset.userId, newPass);
+      UI.setUsersStatus('✓ Contraseña restablecida', 'ok');
+    }
+  });
+
   document.getElementById('mcOpenTbody').addEventListener('click', e => {
     const btn = e.target.closest('[data-mc-resolve]');
     if (!btn) return;
@@ -479,13 +736,9 @@ export async function init() {
   });
   document.getElementById('btnMcToggleResolved').addEventListener('click', () => Events.toggleResolvedIncidents());
 
-  // ── Administración — Historial y Configuración (accesos directos;
-  // mismo mecanismo que ya usan el ícono 🗂️ y el chip de usuario del
-  // topbar, no se duplica lógica) ──
   document.getElementById('btnHistoryOpenAdmin')?.addEventListener('click', () => Events.openHistory());
-  document.getElementById('btnOpenSettingsAdmin')?.addEventListener('click', () => UI.openModal('settings'));
+  document.getElementById('btnOpenSettingsAdmin')?.addEventListener('click', () => UI.openModal());
 
-  // ── Historial de caché ──
   document.getElementById('btnCacheHistClear').addEventListener('click', async () => {
     if (!confirm('¿Eliminar todo el caché histórico de facturas? Esta acción no se puede deshacer.')) return;
     await FactCache.clear();
@@ -493,14 +746,12 @@ export async function init() {
     UI.renderCacheHistory();
   });
 
-  // ── Warn Confirm Modal ──
   document.getElementById('wmReview').addEventListener('click', () => WarnModal.review());
   document.getElementById('wmExport').addEventListener('click', () => WarnModal.exportAnyway());
   document.getElementById('warnModalOverlay').addEventListener('click', e => {
     if (e.target === document.getElementById('warnModalOverlay')) WarnModal.close();
   });
 
-  // ── Route Picker ──
   document.getElementById('rpOptions').addEventListener('click', e => {
     const opt = e.target.closest('.route-picker-opt');
     if (!opt) return;
@@ -511,14 +762,12 @@ export async function init() {
     if (e.target === document.getElementById('routePickerOverlay')) RoutePicker.close();
   });
 
-  // ── Edit drawer ──
   document.getElementById('btnEditSave').addEventListener('click',   () => EditSystem.saveAndRevalidate());
   document.getElementById('btnEditCancel').addEventListener('click', () => EditSystem.close());
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { EditSystem.close(); WarnModal.close(); RoutePicker.close(); }
+    if (e.key === 'Escape') { EditSystem.close(); WarnModal.close(); RoutePicker.close(); UI.closeModal(); }
   });
 
-  // ── Historial de Procesamientos ──
   document.getElementById('btnHistoryOpen').addEventListener('click', () => Events.openHistory());
   document.getElementById('btnHistoryClose').addEventListener('click', () =>
     document.getElementById('historyModalOverlay').classList.add('hidden'));
@@ -536,11 +785,16 @@ export async function init() {
   });
   document.getElementById('btnHistoryRedownload').addEventListener('click', () => Events.redownloadHistorySession());
 
-  // ── Aviso "día ya procesado" ──
+  document.getElementById('btnHistoryReopen')?.addEventListener('click', async () => {
+    if (!Events._currentHistorySession) return;
+    await Events.reopenSession(Events._currentHistorySession.id);
+    document.getElementById('historyModalOverlay').classList.add('hidden');
+    goStep('fix');
+  });
+
   document.getElementById('btnTodayPreview').addEventListener('click', () => Events.previewTodaySession());
   document.getElementById('btnTodayRedownload').addEventListener('click', () => Events.redownloadToday());
 
-  // ── Init visual (no depende del catálogo) ──
   UI.setActionsEnabled(false);
   UI.resetFixPeak();
   UI.resetQualityBaseline();
@@ -552,32 +806,27 @@ export async function init() {
   UI.updateHealthRail();
   UI.applyMode();
 
-  // ── Init catalog — Supabase (Camino B, Fase 1) ──
   UI.setCatStatus('Cargando catálogo…', 'ok');
-
   const catResult = await initCatalog();
-
   UI.renderCatalog();
   UI.setCatStatus(catResult.msg, catResult.ok ? 'ok' : 'err');
 
-  // ── Init catálogos maestros (Camino C) ──
   await CatalogStore.loadAll();
   UI.renderCatalogMasterStatus('ventanaRecibo');
   UI.renderCatalogMasterStatus('poolReal');
-  // NUEVO (jul-2026): tabla fila-por-fila de cada catálogo maestro —
-  // ver ui.js → renderCatalogAdmin().
   UI.renderCatalogAdmin('ventanaRecibo');
   UI.renderCatalogAdmin('poolReal');
 
-  // ── Aviso de día ya procesado (Camino B, Fase 3) ──
   const todaySession = await DispatchHistory.getTodaySession();
   State.todaySession = todaySession;
   UI.renderTodayBanner(todaySession);
   UI.applyMode();
 
-  // ── First-run modal ──
-  setTimeout(() => {
-    const configured = localStorage.getItem('sd_configured');
-    if (!configured) UI.openModal('setup');
-  }, 350);
+  // First-run/nameModal de nombre libre — RETIRADO. La identidad ahora
+  // se resuelve por completo en el flujo de auth, antes de llegar aquí.
+}
+
+async function refreshUsersAdmin() {
+  const users = await Auth.adminListUsers();
+  UI.renderUsersAdmin(users);
 }

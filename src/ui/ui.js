@@ -135,6 +135,27 @@
  *   las otras variantes de tarjeta — no se agrega ningún listener
  *   nuevo al DOM.
  *
+ * CAMBIO (ago-2026 — "reabrir para corregir"):
+ *   renderFixList() gana un aviso contextual: cuando State.reviewSessionId
+ *   está activo (ver events.js → reopenSession()), el subtítulo de la
+ *   pantalla Correcciones (#fixScreenSub, ver index.html) cambia de
+ *   texto para dejar explícito que esta no es una captura nueva del
+ *   día — evita que el usuario se confunda al ver incidencias sin
+ *   haber cargado las 4 fuentes en Preparación. Puramente cosmético,
+ *   no afecta ninguna lógica de negocio ni ningún otro render.
+ *
+ * CAMBIO (ago-2026 — validación informativa Excel vs PDF en
+ * Preparación, ver features/source-check.js):
+ *   Se agregan renderSourceCheck(result)/toggleSourceCheckDetail() —
+ *   UI no calcula la comparación (eso vive en el módulo puro
+ *   features/source-check.js); solo pinta el resultado que Events le
+ *   pasa (mismo contrato que renderMaintenanceCenter()/renderSVE()).
+ *   result === null oculta la tarjeta por completo (falta Excel o PDF
+ *   todavía) — no requiere ningún chequeo adicional aquí. Puramente
+ *   informativo: nunca deshabilita ningún botón, nunca toca
+ *   State.sveHasCritical/sveHasWarnings ni ningún otro estado que
+ *   gobierne el gate de exportación.
+ *
  * Dependencias:
  *   - State (core/state.js)
  *   - escH (utils/dom.js)
@@ -229,6 +250,14 @@ let _fixPeakTotal = null;
 // IDs usado en el HTML de Preparación (#dropPDF/#pdfSub/#pdfStatus, etc).
 const SOURCE_ID = { pdf: 'PDF', xls: 'XLS', wtms: 'WTMS', desp: 'DESP' };
 
+// Texto por defecto del subtítulo de Correcciones — NUEVO (ago-2026,
+// ver nota de cabecera "reabrir para corregir"). Se guarda aquí como
+// constante para no repetir el literal en renderFixList() y para que
+// quede claro cuál es el texto "normal" al que se vuelve cuando
+// State.reviewSessionId se limpia.
+const FIX_SUB_DEFAULT = 'Resuelve cada incidencia sin salir de esta pantalla — un campo, un valor, listo.';
+const FIX_SUB_REVIEW  = '↺ Sesión reabierta desde el Historial — corrige lo pendiente y exporta de nuevo.';
+
 export const UI = {
 
   // ── Theme ──
@@ -246,46 +275,92 @@ export const UI = {
   selectTheme(t) { UI.applyTheme(t); },
 
   // ── User ──
-  setUser(name) {
-    State.user = name || '';
-    localStorage.setItem('sd_user', State.user);
+  setUser(currentUser) {
     const nameEl = document.getElementById('tbUserName');
-    if (nameEl) nameEl.textContent = State.user || '—';
+    if (nameEl) nameEl.textContent = currentUser ? currentUser.displayName : '—';
     const avatarEl = document.getElementById('tbAvatar');
     if (avatarEl) {
-      const initials = String(State.user || '')
-        .trim().split(/\s+/).slice(0, 2).map(w => w[0] || '').join('').toUpperCase();
+      const initials = currentUser
+        ? String(currentUser.displayName).trim().split(/\s+/).slice(0, 2).map(w => w[0] || '').join('').toUpperCase()
+        : '—';
       avatarEl.textContent = initials || '—';
     }
   },
 
   // ── Modal (nombre + tema) ──
-  openModal(mode) {
-    mode = mode || 'settings';
-    State._modalMode = mode;
-    document.getElementById('nameInput').value = State.user;
+   openModal() {
+    document.getElementById('cfgUsername').value     = State.currentUser?.username || '';
+    document.getElementById('cfgDisplayName').value   = State.currentUser?.displayName || '';
+    document.getElementById('cfgCaptureName').value   = State.currentUser?.captureName || '';
+    document.getElementById('cfgCurrentPassword').value = '';
+    document.getElementById('cfgNewPassword').value     = '';
+    document.getElementById('cfgStatus').textContent    = '\u00A0';
     document.getElementById('themeOptLight').classList.toggle('selected', State.theme === 'light');
     document.getElementById('themeOptDark').classList.toggle('selected', State.theme === 'dark');
-    if (mode === 'setup') {
-      document.getElementById('modalTitle').textContent = '¡Bienvenido!';
-      document.getElementById('modalSub').textContent = 'Configura tu sesión una sola vez. Esta información se guardará automáticamente.';
-      document.getElementById('nameModalBtn').textContent = 'Guardar y comenzar →';
-    } else {
-      document.getElementById('modalTitle').textContent = 'Configuración de sesión';
-      document.getElementById('modalSub').textContent = 'Actualiza tu nombre o el tema de la interfaz.';
-      document.getElementById('nameModalBtn').textContent = 'Guardar cambios';
-    }
     document.getElementById('nameModal').classList.remove('hidden');
-    setTimeout(() => document.getElementById('nameInput').focus(), 80);
   },
-  closeModal(name) {
+  closeModal() {
     document.getElementById('nameModal').classList.add('hidden');
-    if (name !== null) {
-      UI.setUser(name);
-      localStorage.setItem('sd_configured', '1');
-    }
+  },
+  // ── AUTH OVERLAY ──
+  _showAuthView(id) {
+    document.getElementById('authOverlay').classList.remove('hidden');
+    ['authFormKnown', 'authFormFull', 'authFormProfile'].forEach(vid =>
+      document.getElementById(vid).style.display = vid === id ? '' : 'none');
+  },
+showAuthKnown(greetingLine) {
+  UI._showAuthView('authFormKnown');
+  document.getElementById('authGreeting').textContent = greetingLine;
+  document.getElementById('authKnownError').textContent = '';
+  document.getElementById('authKnownPassword').value = '';
+  const btn = document.querySelector('#authFormKnown button[type="submit"]');
+  if (btn) { btn.disabled = false; btn.classList.remove('auth-success'); if (btn.dataset.origText) btn.textContent = btn.dataset.origText; }
+  setTimeout(() => document.getElementById('authKnownPassword').focus(), 80);
+},
+showAuthFull() {
+  UI._showAuthView('authFormFull');
+  document.getElementById('authFullError').textContent = '';
+  const btn = document.querySelector('#authFormFull button[type="submit"]');
+  if (btn) { btn.disabled = false; btn.classList.remove('auth-success'); if (btn.dataset.origText) btn.textContent = btn.dataset.origText; }
+  setTimeout(() => document.getElementById('authFullUsername').focus(), 80);
+},
+  showAuthProfile(prefill) {
+    UI._showAuthView('authFormProfile');
+    document.getElementById('authProfileDisplay').value = prefill.displayName;
+    document.getElementById('authProfileCapture').value = prefill.captureName;
+    document.getElementById('authProfileNewPassword').value = '';
+    document.getElementById('authProfileError').textContent = '';
+  },
+  hideAuthOverlay() {
+    document.getElementById('authOverlay').classList.add('hidden');
   },
 
+  // ── Administración — Usuarios ──
+  renderUsersAdmin(users) {
+    const tbody = document.getElementById('usersTbody');
+    if (!tbody) return;
+    if (!users.length) {
+      tbody.innerHTML = '<tr><td colspan="5"><div class="cat-empty">Sin usuarios registrados.</div></td></tr>';
+      return;
+    }
+    tbody.innerHTML = users.map(u => `
+      <tr>
+        <td class="td-op">${escH(u.username)}</td>
+        <td class="td-op">${escH(u.display_name)}</td>
+        <td class="td-op">${escH(u.capture_name)}</td>
+        <td><span class="status-pill ${u.active ? 'ok' : 'crit'}">${u.active ? 'Activo' : 'Inactivo'}</span></td>
+        <td style="white-space:nowrap">
+          <button class="btn btn-ghost btn-xs" data-user-reset data-user-id="${escH(u.id)}">🔑 Reset</button>
+          <button class="btn btn-ghost btn-xs" data-user-toggle="${u.active ? 'deactivate' : 'activate'}" data-user-id="${escH(u.id)}">${u.active ? '✕ Desactivar' : '✓ Activar'}</button>
+        </td>
+      </tr>`).join('');
+  },
+  setUsersStatus(msg, cls) {
+    const el = document.getElementById('usersStatus');
+    if (!el) return;
+    el.className   = 'cat-status' + (cls ? ' ' + cls : '');
+    el.textContent = msg;
+  },
   // ═══════════════════════════════════════════════════════════════
   // ── PREPARACIÓN — tarjetas de fuente (NUEVO, reemplaza pipeline) ──
   // ═══════════════════════════════════════════════════════════════
@@ -359,6 +434,84 @@ export const UI = {
       <span class="chip ok">📋 ${despCount} despacho</span>`;
     const timeEl = document.getElementById('prepCollapsedTime');
     if (timeEl) timeEl.textContent = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+  },
+
+  // ═══════════════════════════════════════════════════════════════
+  // ── VALIDACIÓN DE FUENTES — Excel vs PDF (NUEVO, ago-2026) ──
+  // Ver features/source-check.js para el cálculo (compareExcelPdf());
+  // este método solo pinta el resultado. Puramente informativo — nunca
+  // toca setActionsEnabled/sveHasCritical/sveHasWarnings ni ningún otro
+  // estado que gobierne el gate de exportación.
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Pinta (o esconde) la tarjeta "Validación de fuentes" de Preparación.
+   * @param {null|{excelCount:number,pdfCount:number,matchCount:number,
+   *   diffCount:number,missingInPdf:string[],onlyInPdf:string[],
+   *   status:'ok'|'warn'}} result — salida de compareExcelPdf(), o null
+   *   si falta Excel o PDF todavía (oculta la tarjeta por completo).
+   */
+  renderSourceCheck(result) {
+    const card = document.getElementById('sourceCheckCard');
+    if (!card) return;
+
+    const pill      = document.getElementById('scStatusPill');
+    const summary   = document.getElementById('scSummary');
+    const toggleBtn = document.getElementById('btnScToggle');
+    const detail    = document.getElementById('scDetail');
+
+    if (!result) {
+      card.style.display = 'none';
+      if (detail) { detail.style.display = 'none'; detail.innerHTML = ''; }
+      if (toggleBtn) toggleBtn.style.display = 'none';
+      return;
+    }
+
+    card.style.display = '';
+    document.getElementById('scExcelCount').textContent = result.excelCount;
+    document.getElementById('scPdfCount').textContent    = result.pdfCount;
+    document.getElementById('scMatchCount').textContent  = result.matchCount;
+
+    if (result.status === 'ok') {
+      pill.className   = 'status-pill ok';
+      pill.textContent = '🟢 Fuentes conciliadas';
+      summary.textContent = `${result.matchCount} entrega${result.matchCount!==1?'s':''} coinciden entre Excel y PDF.`;
+      if (toggleBtn) toggleBtn.style.display = 'none';
+      if (detail) { detail.style.display = 'none'; detail.innerHTML = ''; }
+      return;
+    }
+
+    pill.className   = 'status-pill warn';
+    pill.textContent = '🟡 Revisar diferencias';
+    summary.textContent = `⚠ ${result.diffCount} diferencia${result.diffCount!==1?'s':''} detectada${result.diffCount!==1?'s':''} — esto es informativo, no bloquea la preparación.`;
+    if (toggleBtn) {
+      toggleBtn.style.display = '';
+      const isOpen = detail && detail.style.display && detail.style.display !== 'none';
+      toggleBtn.textContent = isOpen ? 'Ocultar diferencias' : 'Ver diferencias';
+    }
+    if (detail) {
+      detail.innerHTML =
+        (result.missingInPdf.length ? `
+          <div class="sc-detail-group">
+            <div class="sc-detail-group-title">Faltantes en PDF (${result.missingInPdf.length})</div>
+            <div class="sc-detail-list">${result.missingInPdf.map(v => escH(v)).join('<br>')}</div>
+          </div>` : '') +
+        (result.onlyInPdf.length ? `
+          <div class="sc-detail-group">
+            <div class="sc-detail-group-title">Encontradas solo en PDF (${result.onlyInPdf.length})</div>
+            <div class="sc-detail-list">${result.onlyInPdf.map(v => escH(v)).join('<br>')}</div>
+          </div>` : '');
+    }
+  },
+
+  /** Muestra/oculta el detalle de diferencias — listener de #btnScToggle (ver core/app.js). */
+  toggleSourceCheckDetail() {
+    const detail = document.getElementById('scDetail');
+    const btn    = document.getElementById('btnScToggle');
+    if (!detail || !btn) return;
+    const willShow = detail.style.display === 'none' || !detail.style.display;
+    detail.style.display = willShow ? '' : 'none';
+    btn.textContent = willShow ? 'Ocultar diferencias' : 'Ver diferencias';
   },
 
   // ── Progress ──
@@ -904,6 +1057,14 @@ export const UI = {
     const infoWrap  = document.getElementById('fixInfoSection');
     const infoList  = document.getElementById('fixInfoList');
     if (!list || !counter || !progress) return;
+
+    // NUEVO (ago-2026 — "reabrir para corregir"): deja explícito en el
+    // subtítulo de la pantalla que esta no es una captura nueva del día
+    // — evita que el usuario se confunda al ver incidencias sin haber
+    // cargado las 4 fuentes en Preparación. Ver events.js →
+    // reopenSession()/checkSources() para el resto del mecanismo.
+    const subEl = document.getElementById('fixScreenSub');
+    if (subEl) subEl.textContent = State.reviewSessionId ? FIX_SUB_REVIEW : FIX_SUB_DEFAULT;
 
     // NUEVO (jul-2026) — ver nota de cabecera. Se actualiza en cada
     // paso por este método (cubre triggerMerge, _revalidateAfterEdit,
@@ -1588,6 +1749,10 @@ export const UI = {
     State.wtmsData = new Map();   // FIX: faltaba en el reset original — bug latente desde que se agregó WTMS
     State.excludedDettes = new Set();
     State.excludedCount  = 0;
+    // NUEVO (ago-2026 — "reabrir para corregir"): salir del modo
+    // revisión al reiniciar por completo — ver events.js, nota de
+    // cabecera "reabrir para corregir".
+    State.reviewSessionId = null;
     State.merged   = [];
     State.sveIssues = [];
     State.sveHasCritical = false;
@@ -1620,6 +1785,9 @@ export const UI = {
     UI.setActionsEnabled(false);
     UI.resetFixPeak();
     UI.resetQualityBaseline();
+    // NUEVO (ago-2026 — validación Excel vs PDF): oculta la tarjeta al
+    // reiniciar por completo — ver features/source-check.js.
+    UI.renderSourceCheck(null);
     UI.updatePrepView(['PDFs de cargas','Excel macro (RUTEO NUEVO)',"Status de despacho (RUTA + ID'S MASTER)",'Reporte WTMS']);
     UI.renderTable();
     UI.renderFixList();
