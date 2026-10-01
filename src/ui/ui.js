@@ -156,6 +156,47 @@
  *   State.sveHasCritical/sveHasWarnings ni ningún otro estado que
  *   gobierne el gate de exportación.
  *
+ * CAMBIO (sep-2026 — captura rápida en el Centro de Mantenimiento):
+ *   renderMaintenanceCenter() gana una columna "Captura" (entre
+ *   "Detalle" y "Ocurrencias", ver index.html): para las incidencias
+ *   que admiten captura inline (getInlineFix(), features/incidents/
+ *   inline-fix.js — placas de tractor/remolque en Pool Real,
+ *   formato/tienda/estado en Ventana de Recibo) pinta un input por
+ *   cada campo de INLINE_FIX + un botón ✓; el resto de las incidencias
+ *   muestra "—". Los campos obligatorios llevan "*" en el placeholder y
+ *   los opcionales "(opc.)". Además, el detalle muestra las últimas
+ *   rutas afectadas, y antes de reconstruir la tabla se respalda lo que
+ *   el usuario ya escribió en los inputs (clave "id|columna") y se
+ *   restaura después — un refresh (guardar otra fila, recargar el
+ *   panel) ya no borra capturas en curso. UI no valida ni guarda nada
+ *   aquí: los listeners viven en core/app.js y la lógica en
+ *   features/incidents/inline-fix.js vía Events.
+ *
+ * CAMBIO (sep-2026 — "Reemplazar fuentes" por fuente + barra de PDFs):
+ *   - _prepEditMode (variable de módulo, estado puramente visual, igual
+ *     que _tableFilter): cuando las 4 fuentes están cargadas, el botón
+ *     "Reemplazar fuentes" YA NO reinicia todo — activa este modo, que
+ *     vuelve a mostrar la grilla de las 4 tarjetas (más la barra
+ *     #prepEditBar con "Listo"/"Reiniciar las 4") para recargar solo
+ *     la fuente que se quiera. Ver core/app.js (listeners) y
+ *     events.js (handlers de cada fuente).
+ *   - updatePrepView(missing) ahora decide tres vistas: grilla (faltan
+ *     fuentes, o modo reemplazo), vista contraída (todo cargado, modo
+ *     normal) y barra de edición (todo cargado + modo reemplazo). Si
+ *     faltan fuentes, sale automáticamente del modo reemplazo (la
+ *     grilla ya es visible). Firma pública sin cambios.
+ *   - setPrepEditMode(on) — NUEVO. Entra/sale del modo. Usa
+ *     Events.checkSources().ok (no solo `missing`) para respetar el
+ *     bypass de "sesión reabierta desde Historial".
+ *   - _renderPdfTools(showGrid) — NUEVO. Pinta #pdfTools (resumen de
+ *     rutas/entregas PDF en memoria + checkbox #pdfReplaceAll) solo
+ *     cuando la grilla es visible y hay PDFs cargados. Al ocultarse
+ *     desmarca el checkbox para no dejar "reemplazar todos" activo por
+ *     accidente. La lógica de agregar/reemplazar vive en
+ *     events.js → handlePDFs(), no aquí.
+ *   - resetAll() sale del modo reemplazo vía updatePrepView (que ya
+ *     recibe todas las fuentes como faltantes).
+ *
  * Dependencias:
  *   - State (core/state.js)
  *   - escH (utils/dom.js)
@@ -170,6 +211,8 @@
  *     pura de presentación para el Centro de Mantenimiento
  *   - INCIDENT_TYPES (features/incidents/incident-types.js) — describe()
  *     de cada incidencia para el Centro de Mantenimiento
+ *   - getInlineFix (features/incidents/inline-fix.js) — qué campos
+ *     capturar por incidencia (solo lectura de configuración)
  *   - Events (events/events.js) — resuelto en runtime vía _setEvents()
  */
 import { State } from '../core/state.js';
@@ -180,9 +223,12 @@ import {
 } from '../core/constants.js';
 import { SVE_CRIT, SVE_WARN, SVE_INFO, SVE_ICONS } from '../features/validation/sve.js';
 import { FactCache } from '../features/fact-cache.js';
+import { Autosave } from '../features/autosave.js';
 import { CATALOGS } from '../features/catalogs/catalog-registry.js';
 import { priorityTier } from '../features/incidents/incident-engine.js';
 import { INCIDENT_TYPES } from '../features/incidents/incident-types.js';
+import { getInlineFix } from '../features/incidents/inline-fix.js';
+import { Motion } from '../theme-engine/motion.js';
 
 let Events;
 /** Resuelve la dependencia circular UI ↔ Events — llamado una vez desde core/app.js */
@@ -194,6 +240,11 @@ export function _setEvents(ev) { Events = ev; }
 // Se resetea junto con el resto en UI.resetAll().
 let _tableFilter = 'all';
 let _tableSearch = '';
+
+// ── Modo "Reemplazar fuentes" de Preparación (NUEVO, sep-2026) ──
+// Estado puramente visual — ver nota de cabecera. true = con las 4
+// fuentes cargadas, se muestra la grilla para recargar cualquiera.
+let _prepEditMode = false;
 
 // ── Correcciones — clasificación de incidencias (NUEVO, mockup jul-2026) ──
 // Reglas cuyo issue mapea 1:1 a UN solo campo editable — candidatas a
@@ -360,6 +411,7 @@ showAuthFull() {
     if (!el) return;
     el.className   = 'cat-status' + (cls ? ' ' + cls : '');
     el.textContent = msg;
+    if (cls === 'err') Motion.shake(el);
   },
   // ═══════════════════════════════════════════════════════════════
   // ── PREPARACIÓN — tarjetas de fuente (NUEVO, reemplaza pipeline) ──
@@ -398,27 +450,48 @@ showAuthFull() {
     const suffix = SOURCE_ID[key];
     if (!suffix) return;
     const card = document.getElementById('drop' + suffix);
-    if (card) card.classList.toggle('processing', !!on);
+    if (!card) return;
+    const wasProcessing = card.classList.contains('processing');
+    card.classList.toggle('processing', !!on);
+    // Pop del ícono SOLO en la transición processing→listo (nunca al
+    // arrancar, y nunca si ya estaba quieta) — sección 6: "tarjeta de
+    // fuente que termina de procesar: pop del ícono (400ms)".
+    if (wasProcessing && !on) Motion.popIcon(card.querySelector('.up-ico'));
   },
 
   /** Agrega una nota adicional (ej. aviso de caché histórico) al sub-texto de una fuente, sin pisar el texto principal. */
   appendSourceNote(key, note) {
     const sub = document.getElementById(key + 'Sub');
     if (!sub || !note) return;
-    sub.innerHTML += ` · <span style="color:var(--amber-deep)">${note}</span>`;
+    sub.innerHTML += ` · <span style="color:var(--amber-ink)">${note}</span>`;
   },
 
   /**
-   * Colapsa/expande la grilla de Preparación según falten fuentes o no.
+   * Decide qué vista de Preparación mostrar según falten fuentes o no:
+   *   - faltan fuentes           → grilla de las 4 tarjetas
+   *   - todo cargado             → vista contraída (chips resumen)
+   *   - todo cargado + modo
+   *     "Reemplazar fuentes"     → grilla + barra #prepEditBar
+   * CAMBIO (sep-2026): antes solo alternaba grilla/contraída; ahora
+   * también gobierna el modo reemplazo y la barra de PDFs (ver nota de
+   * cabecera). Firma pública sin cambios.
    * @param {string[]} missing — salida de Events.checkSources().missing
    */
   updatePrepView(missing) {
     const grid      = document.getElementById('prepGrid');
     const collapsed = document.getElementById('prepCollapsed');
+    const editBar   = document.getElementById('prepEditBar');
     if (!grid || !collapsed) return;
     const allDone = missing.length === 0;
-    grid.style.display      = allDone ? 'none' : '';
-    collapsed.style.display = allDone ? '' : 'none';
+    // Con fuentes faltantes la grilla ya es visible — no tiene sentido
+    // seguir en modo reemplazo.
+    if (!allDone) _prepEditMode = false;
+    const showGrid = !allDone || _prepEditMode;
+
+    grid.style.display      = showGrid ? '' : 'none';
+    collapsed.style.display = (allDone && !_prepEditMode) ? '' : 'none';
+    if (editBar) editBar.style.display = (allDone && _prepEditMode) ? '' : 'none';
+    UI._renderPdfTools(showGrid);
     if (!allDone) return;
 
     const chipsEl = document.getElementById('prepChips');
@@ -434,6 +507,48 @@ showAuthFull() {
       <span class="chip ok">📋 ${despCount} despacho</span>`;
     const timeEl = document.getElementById('prepCollapsedTime');
     if (timeEl) timeEl.textContent = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+  },
+
+  /**
+   * Entra/sale del modo "Reemplazar fuentes" (grilla visible con las 4
+   * fuentes cargadas). NUEVO (sep-2026). Usa Events.checkSources().ok
+   * (no solo `missing`) para respetar el bypass de sesión reabierta
+   * desde Historial: en ese caso `ok` es true aunque `missing` no esté
+   * vacío, y se pasa [] igual que hace Events.reopenSession().
+   * @param {boolean} on
+   */
+  setPrepEditMode(on) {
+    _prepEditMode = !!on;
+    const { ok, missing } = Events ? Events.checkSources() : { ok: false, missing: ['x'] };
+    UI.updatePrepView(ok ? [] : missing);
+  },
+
+  /**
+   * Barra de PDFs de Preparación: resumen de lo que hay en memoria +
+   * checkbox "Reemplazar todos los PDFs con la próxima carga" (ver
+   * events.js → handlePDFs()). Solo visible con la grilla visible y al
+   * menos un PDF cargado; al ocultarse desmarca el checkbox para no
+   * dejar "reemplazar todos" activo por accidente. NUEVO (sep-2026).
+   * @private
+   * @param {boolean} showGrid
+   */
+  _renderPdfTools(showGrid) {
+    const el = document.getElementById('pdfTools');
+    if (!el) return;
+    const blocks = new Set(State.pdfData.values());
+    if (!showGrid || !blocks.size) {
+      el.style.display = 'none';
+      const cb = document.getElementById('pdfReplaceAll');
+      if (cb) cb.checked = false;
+      return;
+    }
+    const rutas = new Set([...blocks].map(b => b.ruta)).size;
+    const info  = document.getElementById('pdfToolsInfo');
+    if (info) {
+      info.textContent =
+        `📄 ${rutas} ruta${rutas !== 1 ? 's' : ''} · ${blocks.size} entrega${blocks.size !== 1 ? 's' : ''} en memoria — los PDFs nuevos se agregan a estos`;
+    }
+    el.style.display = '';
   },
 
   // ═══════════════════════════════════════════════════════════════
@@ -764,7 +879,7 @@ showAuthFull() {
     if (_qualityBaseline === null) _qualityBaseline = quality;
 
     ringArc.style.strokeDashoffset = String(CIRC * (1 - quality / 100));
-    if (ringNum) ringNum.textContent = quality + '%';
+    if (ringNum) Motion.animateNumber(ringNum, quality, { suffix: '%' });
 
     const { quick, review, confirm, multi } = UI._buildFixBuckets();
     const currentTotal = quick.length + review.length + confirm.length + multi.length;
@@ -781,8 +896,8 @@ showAuthFull() {
         ? `Se corrigieron ${resolved} incidencia${resolved!==1?'s':''} sobre ${total} ruta${total!==1?'s':''} procesada${total!==1?'s':''}. La calidad mejoró desde el primer cruce automático.`
         : `${total} ruta${total!==1?'s':''} procesada${total!==1?'s':''} — calidad ${quality}% desde el primer cruce automático.`;
     }
-    if (baInit)  baInit.textContent  = _qualityBaseline + '%';
-    if (baFinal) baFinal.textContent = quality + '%';
+    if (baInit)  Motion.animateNumber(baInit,  _qualityBaseline, { suffix: '%' });
+    if (baFinal) Motion.animateNumber(baFinal, quality,           { suffix: '%' });
 
     const facOk  = State.merged.filter(r => String(getMapped(r,'FAC.')||'').trim()).length;
     const opOk   = State.merged.filter(r => String(getMapped(r,'OPERADOR')||'').trim()).length;
@@ -808,6 +923,12 @@ showAuthFull() {
         <div class="q-metric-val">${escH(String(m.val))}</div>
         <div class="q-metric-label">${m.label}</div>
       </div>`).join('');
+    // Entrada escalonada (sección 6: 45ms entre elementos, máximo 8) —
+    // METRIC_DEFS ya trae exactamente 8 tarjetas, encaja justo con el tope.
+    metrics.querySelectorAll('.q-metric').forEach((elm, i) => {
+      elm.style.animationDelay = `${i * 45}ms`;
+      elm.classList.add('mi-stagger-in');
+    });
 
     if (ctaWrap) {
       if (State.sveHasCritical) {
@@ -1307,9 +1428,9 @@ showAuthFull() {
     const rutasEl = document.getElementById('celebrateRutas');
     const corrEl  = document.getElementById('celebrateCorrecciones');
     const calEl   = document.getElementById('celebrateCalidad');
-    if (rutasEl) rutasEl.textContent = total;
-    if (corrEl)  corrEl.textContent  = resolved;
-    if (calEl)   calEl.textContent   = State.sveLastQuality + '%';
+    if (rutasEl) Motion.animateNumber(rutasEl, total,    { force: true });
+    if (corrEl)  Motion.animateNumber(corrEl,  resolved, { force: true });
+    if (calEl)   Motion.animateNumber(calEl,   State.sveLastQuality, { force: true, suffix: '%' });
 
     overlay.classList.add('show');
   },
@@ -1339,6 +1460,7 @@ showAuthFull() {
     const el = document.getElementById('catSt');
     el.className   = 'cat-status' + (cls ? ' ' + cls : '');
     el.textContent = msg;
+    if (cls === 'err') Motion.shake(el);
   },
 
   // ── Catálogos Maestros (Camino C) ──
@@ -1469,12 +1591,25 @@ showAuthFull() {
    * (IncidentStore.listOpen() la entrega así). La prioridad se
    * recalcula en cada lectura — nunca se persiste — por lo que siempre
    * refleja la antigüedad real al momento de abrir el panel.
+   *
+   * CAMBIO (sep-2026): columna "Captura" con inputs inline por
+   * incidencia (ver nota de cabecera "CAMBIO (sep-2026 — captura
+   * rápida...)") y respaldo/restauración de lo escrito entre refreshes.
    * @param {Array<object>} incidents — salida de IncidentStore.listOpen()
    */
   renderMaintenanceCenter(incidents) {
     const summaryEl = document.getElementById('mcSummary');
     const tbody     = document.getElementById('mcOpenTbody');
     if (!summaryEl || !tbody) return;
+
+    // Respaldo de lo que el usuario ya escribió en las celdas de
+    // captura — el refresh reconstruye la tabla completa y, sin esto,
+    // guardar UNA fila borraría las capturas en curso de las demás.
+    // Clave: "id|columna".
+    const draft = new Map();
+    tbody.querySelectorAll('[data-mc-fix-input]').forEach(inp => {
+      if (inp.value.trim()) draft.set(inp.dataset.mcFixInput + '|' + inp.dataset.mcCol, inp.value);
+    });
 
     // ── Tarjetas resumen — una por catálogo registrado, más el total ──
     const bySource = new Map();
@@ -1500,7 +1635,7 @@ showAuthFull() {
 
     // ── Tabla de incidencias abiertas ──
     if (!incidents.length) {
-      tbody.innerHTML = '<tr><td colspan="8"><div class="cat-empty">Sin incidencias abiertas — todos los catálogos están al día.</div></td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9"><div class="cat-empty">Sin incidencias abiertas — todos los catálogos están al día.</div></td></tr>';
       return;
     }
 
@@ -1512,11 +1647,28 @@ showAuthFull() {
       const desc   = type ? type.describe({ sourceId: inc.source_id, keyName: inc.key_name, keyValue: inc.key_value }) : `${inc.key_name}: ${inc.key_value}`;
       const routes = Object.keys(inc.affected_routes || {});
       const routesTitle = routes.slice(-10).join(', ');
+      const routesShort = routes.slice(-3).join(', ') + (routes.length > 3 ? ` +${routes.length - 3}` : '');
+
+      // Celda de captura rápida — solo para incidencias con configuración
+      // en INLINE_FIX (ver features/incidents/inline-fix.js).
+      const fix = getInlineFix(inc);
+      const fixCell = fix
+        ? `<div class="mc-fix">
+             ${fix.fields.map(f => `<input class="cat-input mc-fix-input" style="width:${f.width}px" maxlength="40" autocomplete="off"
+                 data-mc-fix-input="${escH(inc.id)}" data-mc-col="${escH(f.col)}"
+                 placeholder="${escH(f.placeholder)}${f.required ? ' *' : ' (opc.)'}"
+                 title="${escH(f.label)}${f.required ? ' — obligatorio' : ' — opcional'}">`).join('')}
+             <button class="btn btn-success btn-xs" data-mc-fix-save="${escH(inc.id)}" title="Guardar en el catálogo y resolver">✓</button>
+           </div>`
+        : '<span class="dim">—</span>';
+
       return `
         <tr>
           <td><span class="status-pill ${tier.cls}">${tier.label}</span></td>
           <td>${escH(CATALOGS[inc.source_id]?.label || inc.source_id)}</td>
-          <td class="td-op" title="${escH(desc)}">${escH(desc)}</td>
+          <td class="td-op" title="${escH(desc)}">${escH(desc)}
+            ${routes.length ? `<div class="mc-routes" title="${escH(routesTitle)}">Rutas: ${escH(routesShort)}</div>` : ''}</td>
+          <td>${fixCell}</td>
           <td>${inc.occurrence_count}</td>
           <td title="${escH(routesTitle)}">${inc.route_count}</td>
           <td>${fmtDateShort(inc.first_seen_at)}</td>
@@ -1524,6 +1676,12 @@ showAuthFull() {
           <td><button class="btn btn-ghost btn-xs" data-mc-resolve="${escH(inc.id)}">✓ Resolver</button></td>
         </tr>`;
     }).join('');
+
+    // Restaura lo que el usuario tenía escrito antes del refresh.
+    tbody.querySelectorAll('[data-mc-fix-input]').forEach(inp => {
+      const key = inp.dataset.mcFixInput + '|' + inp.dataset.mcCol;
+      if (draft.has(key)) inp.value = draft.get(key);
+    });
   },
 
   /**
@@ -1559,6 +1717,7 @@ showAuthFull() {
     if (!el) return;
     el.className   = 'cat-status' + (cls ? ' ' + cls : '');
     el.textContent = msg;
+    if (cls === 'err') Motion.shake(el);
   },
 
   // ── Cache History ──
@@ -1742,6 +1901,10 @@ showAuthFull() {
 
   // ── Reset everything ──
   resetAll() {
+    // El usuario pidió explícitamente empezar de cero ("Reiniciar las 4")
+    // - el respaldo local de Autosave ya no aplica a la sesión que se
+    // está borrando, se limpia junto con el resto del State.
+    Autosave.clear();
     State.pdfData  = new Map();
     State.xlsData  = null;
     State.factData = new Map();
@@ -1788,6 +1951,8 @@ showAuthFull() {
     // NUEVO (ago-2026 — validación Excel vs PDF): oculta la tarjeta al
     // reiniciar por completo — ver features/source-check.js.
     UI.renderSourceCheck(null);
+    // updatePrepView recibe las 4 fuentes como faltantes → también
+    // apaga _prepEditMode y oculta #prepEditBar/#pdfTools (sep-2026).
     UI.updatePrepView(['PDFs de cargas','Excel macro (RUTEO NUEVO)',"Status de despacho (RUTA + ID'S MASTER)",'Reporte WTMS']);
     UI.renderTable();
     UI.renderFixList();

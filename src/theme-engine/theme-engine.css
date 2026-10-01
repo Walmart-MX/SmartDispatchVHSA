@@ -1,0 +1,304 @@
+/*
+ * theme-engine/theme-engine.css
+ * Dynamic Experience — hoja de estilos del Theme Engine.
+ *
+ * REGLA DURA: este archivo SOLO consume variables --t-*/--on-accent que
+ * escribe theme-engine.js (o el puente --brand-accent en index.html).
+ * Nunca declara un color de marca fijo aquí — eso vive en cada tema
+ * (src/theme-engine/themes/*.js) — y JAMÁS toca los colores semánticos
+ * (--green/--amber/--red/--blue de index.html seguirán significando
+ * correcto/advertencia/crítico/informativo pase lo que pase aquí).
+ *
+ * Fase 3: se suman partículas (.t-particle*), la luna de Halloween
+ * (.t-moon), la tira decorativa (#ambientStrip) y los ajustes de
+ * Intensidad 2 (todo bajo `html[data-int="2"]`, puramente aditivo —
+ * Intensidad 1 se queda exactamente como quedó la Fase 2). También se
+ * agrega el bloque de prefers-reduced-motion.
+ */
+
+#ambientHost {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  /* Velo muy sutil — solo visible en los huecos entre tarjetas (el
+     .shell no tiene fondo propio, ver index.html); las tarjetas y el
+     texto viven en superficies opacas (--surface) y nunca lo tocan.
+     35% es un punto de partida conservador — fácil de ajustar aquí
+     mismo si en pantalla se ve muy tenue o muy marcado. */
+  background: color-mix(in srgb, var(--t-wash, transparent) 35%, transparent);
+  transition: background .6s ease;
+}
+
+/* Glow radial por tema — un div por tema activo (theme-engine.js lo
+   crea/retira), posición y color son literales del propio tema (NO se
+   mezclan entre sí, a diferencia de accent/tint/wash) para que el
+   crossfade se vea como "un glow se apaga mientras otro se prende", no
+   como un punto borroso a mitad de camino. */
+.t-glow {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: radial-gradient(640px circle at var(--glow-pos, 90% -20%), var(--glow-color, transparent), transparent 70%);
+  transition: opacity .6s ease;
+}
+
+/* Iconos del encabezado (junto a .tb-user, ver index.html) */
+.tb-ornament {
+  position: relative;
+  height: 20px;
+  min-width: 20px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--brand-accent);
+}
+.tb-orn-layer {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity .6s ease;
+  pointer-events: none;
+}
+.tb-orn-layer svg { display: block; flex-shrink: 0; }
+
+/* ══ Fase 3 — Partículas (ambient/particles.js) ══
+   Un <span> por partícula, posición/tamaño/color fijados inline por
+   JS; aquí solo viven las formas y las trayectorias (keyframes). */
+.t-particles { position: absolute; inset: 0; transition: opacity .6s ease; }
+.t-particle { position: absolute; pointer-events: none; will-change: transform, opacity; }
+
+.t-particle-petal { border-radius: 50% 0 50% 50%; animation: tpFall linear infinite; }
+.t-particle-flake { border-radius: 50%; animation: tpSnow linear infinite; }
+.t-particle-spark { border-radius: 50%; box-shadow: 0 0 4px currentColor; animation: tpFlicker ease-in-out infinite; }
+.t-particle-mote  { border-radius: 50%; animation: tpDrift ease-in-out infinite; }
+
+@keyframes tpFall {
+  0%   { transform: translate3d(0,-10vh,0) rotate(0deg); }
+  100% { transform: translate3d(0,110vh,0) rotate(180deg); }
+}
+@keyframes tpSnow {
+  0%   { transform: translate3d(0,-10vh,0) translateX(0); }
+  50%  { transform: translateX(12px); }
+  100% { transform: translate3d(0,110vh,0) translateX(-6px); }
+}
+@keyframes tpFlicker {
+  0%, 100% { transform: scale(.6); opacity: .15; }
+  50%      { transform: scale(1); opacity: 1; }
+}
+@keyframes tpDrift {
+  0%, 100% { transform: translate3d(0,0,0); }
+  50%      { transform: translate3d(8px,-14px,0); }
+}
+
+/* ══ Fase 3 — Luna de Halloween (ambient/particles.js → renderMoon) ══ */
+.t-moon {
+  position: absolute;
+  top: 8%;
+  right: 10%;
+  color: #F5EFE0;
+  opacity: 0;
+  transition: opacity .6s ease, width .4s ease, height .4s ease;
+}
+.t-moon svg { width: 100%; height: 100%; display: block; }
+
+/* ══ Fase 3 — Tira decorativa (ambient/strips.js) ══ */
+#ambientStrip {
+  position: fixed;
+  left: 0; right: 0; top: 60px;
+  z-index: 49;
+  pointer-events: none;
+  overflow: hidden;
+  height: 0;
+  transition: height .4s ease;
+}
+#ambientStrip svg { position: absolute; inset: 0; opacity: 0; transition: opacity .6s ease; }
+
+/* ══ Fase 3 — Intensidad 2 ("Intenso", default) ══
+   Todo aditivo bajo html[data-int="2"] — Intensidad 1 ("Sutil") es
+   exactamente la Fase 2 tal cual, sin ninguna de estas reglas. */
+html[data-int="2"] .t-glow { animation: tGlowBreathe 7s ease-in-out infinite; }
+@keyframes tGlowBreathe {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.08); }
+}
+
+html[data-int="2"] #ambientHost::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(600px circle at 0% 120%, var(--t-accent2, transparent), transparent 70%);
+  opacity: .22;
+}
+
+html[data-int="2"] .topbar {
+  background: linear-gradient(180deg, var(--t-tint, var(--navy)) 0%, color-mix(in srgb, var(--t-tint, var(--navy)) 70%, var(--brand-accent) 30%) 100%);
+  box-shadow: 0 2px 20px rgba(0,0,0,.2), 0 1px 0 var(--brand-accent);
+}
+
+html[data-int="2"] .up-card {
+  border-color: color-mix(in srgb, var(--brand-accent) 22%, var(--border));
+}
+html[data-int="2"] .up-card:hover {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-accent) 28%, transparent), var(--shadow-md);
+}
+
+html[data-int="2"] .screen-title { position: relative; padding-left: 14px; }
+html[data-int="2"] .screen-title::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 2px; bottom: 2px;
+  width: 4px;
+  border-radius: 2px;
+  background: var(--brand-accent);
+}
+html[data-int="2"][data-theme="dark"] .screen-title {
+  text-shadow: 0 0 14px color-mix(in srgb, var(--brand-accent) 35%, transparent);
+}
+
+html[data-int="2"] #ambientStrip { filter: drop-shadow(0 3px 6px rgba(0,0,0,.25)); }
+
+html[data-int="2"] .tb-ornament { height: 22px; min-width: 22px; }
+html[data-int="2"] .tb-orn-layer svg {
+  width: 22px; height: 22px;
+  filter: drop-shadow(0 0 4px var(--brand-accent));
+}
+
+html[data-int="2"] .t-moon { animation: tMoonPulse 4s ease-in-out infinite; }
+@keyframes tMoonPulse {
+  0%, 100% { filter: drop-shadow(0 0 6px var(--t-accent, transparent)); }
+  50%      { filter: drop-shadow(0 0 14px var(--t-accent, transparent)); }
+}
+
+html[data-int="2"] .btn-amber,
+html[data-int="2"][data-theme="dark"] .btn-primary {
+  box-shadow: 0 6px 22px color-mix(in srgb, var(--brand-accent) 55%, transparent);
+}
+
+/* ══ prefers-reduced-motion: apaga partículas y vuelve todo instantáneo ══
+   (sección 6 de la propuesta extiende esto a botones/toasts en la
+   Fase 4; aquí cubrimos todo lo que esta fase introduce). */
+@media (prefers-reduced-motion: reduce) {
+  #ambientHost, #ambientHost::after, .t-glow, .t-particles, .t-moon,
+  .tb-orn-layer, #ambientStrip, #ambientStrip svg, .topbar {
+    transition: none !important;
+    animation: none !important;
+  }
+  .t-particles { display: none !important; }
+}
+
+/* ══ Escena del login (ambient/login-stage.js) ══
+   Única pantalla donde el tema tiene protagonismo total — ver el
+   docstring de login-stage.js para el porqué. El fondo del overlay
+   deja de ser el rgba(0,10,30,.7) genérico que comparte con el resto
+   de los modales (.modal-overlay en index.html) y se vuelve un degradé
+   inmerso en los tokens del tema activo; #authBox (la tarjeta real del
+   formulario) sigue siendo 100% opaca (--surface) así que el contraste
+   del formulario NUNCA depende de qué tan dramático se vea el fondo. */
+#authOverlay {
+  /* Petición explícita: "todos los temas se ven mejor en oscuro" — el
+     login SIEMPRE se pinta oscuro/negro, sin importar sd_theme_mode ni
+     el data-theme real de <html> (eso sigue intacto para el resto de
+     la app, que respeta la preferencia real del usuario). No tocamos
+     data-theme aquí — solo redeclaramos las variables de superficie/
+     texto/borde a sus valores oscuros DENTRO de este contenedor; como
+     TODOS los .modal-* ya consumen --surface2/--text2/--border2/etc.
+     (el puente de compatibilidad, ver :root más arriba), heredan el
+     oscuro solos — cero cambios en los componentes. Más negro que el
+     modo oscuro normal de la app (--surface:#0E1626) a propósito: es
+     una vitrina, no una pantalla de trabajo, y entre más negro el
+     fondo, más resalta el acento de cada tema (sección de abajo). */
+  --surface: #0A0D12;
+  --surface-2: #12161D;
+  --surface-3: #171C24;
+  --text: #F3F6FA;
+  --text-2: #A6B2C2;
+  --text-3: #7C8898;
+  --text-4: #57627A;
+  --border: rgba(255,255,255,.10);
+  --border-2: rgba(255,255,255,.18);
+  --navy: #05070A;
+  --navy-2: #0B0F14;
+  background:
+    radial-gradient(1100px circle at 12% -10%, color-mix(in srgb, var(--t-accent, #F5A623) 32%, transparent), transparent 60%),
+    radial-gradient(900px circle at 105% 110%, color-mix(in srgb, var(--t-accent2, #1E9E6B) 28%, transparent), transparent 55%),
+    linear-gradient(160deg, var(--t-tint, #0B1D33) 0%, #020305 100%);
+  overflow: hidden;
+}
+#authAmbient, #authStrip, .auth-ornament {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+#authBox { position: relative; z-index: 1; }
+
+/* Aura que respira detrás de la tarjeta — a diferencia de .t-glow (que
+   vive en una esquina), esta cubre el centro de toda la pantalla; por
+   eso no reutiliza esa clase, el efecto buscado es distinto. */
+#authOverlay::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(520px circle at 50% 40%, color-mix(in srgb, var(--t-accent, #F5A623) 16%, transparent), transparent 70%);
+  animation: authAuraBreathe 6s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes authAuraBreathe { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+
+/* Ornamento gigante — MISMO renderOrnaments() del topbar, reescalado
+   por CSS a un tamaño de vitrina y corrido del centro exacto (donde
+   quedaría tapado por #authBox) hacia la esquina superior derecha. */
+.auth-ornament { color: var(--t-accent, #F5A623); }
+.auth-ornament .tb-orn-layer {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%) translate(16vw, -14vh);
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0;
+  transition: opacity .8s ease;
+}
+.auth-ornament .tb-orn-layer svg {
+  width: 46vmin; height: 46vmin; max-width: 360px; max-height: 360px;
+  filter: drop-shadow(0 0 48px currentColor);
+}
+
+/* La tira decorativa recorre el borde inferior en vez del filo del
+   topbar — aquí sobra espacio vertical, así que renderStrips() recibe
+   un baseHeight mucho más grande (ver login-stage.js). */
+#authStrip { inset: auto 0 0 0; overflow: hidden; }
+#authStrip svg { position: absolute; inset: 0; opacity: 0; transition: opacity .6s ease; }
+
+/* La tarjeta del login flota con un resplandor del acento del tema
+   activo, y el logo pulsa suavemente con --brand-accent (igual acento
+   de marca que ya usa el resto de la app — sección 7). */
+#authBox {
+  box-shadow: var(--shadow-lg), 0 0 70px color-mix(in srgb, var(--t-accent, #F5A623) 32%, transparent);
+  border-color: color-mix(in srgb, var(--t-accent, #F5A623) 30%, var(--border));
+}
+/* #authBox .modal-logo-mark (no .modal-logo-mark a secas): el modal de
+   Configuración reutiliza la MISMA clase para su logo y NO debe
+   heredar este efecto — el protagonismo épico es exclusivo del login.
+   El selector con ID de paso resuelve un problema de cascada:
+   theme-engine.css se carga ANTES que el <style> inline de index.html
+   (que define .modal-logo-mark con background var(--amber)), así que
+   una regla de igual especificidad ahí perdería — #authBox la hace
+   ganar sin pelear por orden de carga. */
+#authBox .modal-logo-mark { background: var(--brand-accent); animation: authLogoPulse 3s ease-in-out infinite; }
+@keyframes authLogoPulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand-accent) 45%, transparent); }
+  50%      { box-shadow: 0 0 0 9px color-mix(in srgb, var(--brand-accent) 0%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #authOverlay::before, #authBox .modal-logo-mark, .auth-ornament .tb-orn-layer {
+    animation: none !important;
+    transition: none !important;
+  }
+}

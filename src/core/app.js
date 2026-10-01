@@ -148,6 +148,35 @@
  *   sin ninguna llamada a Events — la tarjeta ya se actualiza sola
  *   desde Events.triggerMerge().
  *
+ * CAMBIO (sep-2026 — captura rápida en el Centro de Mantenimiento):
+ *   El listener delegado de #mcOpenTbody (antes solo resolvía
+ *   incidencias con [data-mc-resolve]) gana dos ramas: el botón ✓ de
+ *   captura rápida ([data-mc-fix-save], junta los inputs
+ *   [data-mc-fix-input] de ESA fila y llama a
+ *   Events.saveMaintenanceFix()) y la tecla Enter dentro de cualquiera
+ *   de esos inputs (mismo efecto). Se agrega además el listener de
+ *   #btnMcSaveAll, que junta TODAS las filas con algo capturado y las
+ *   guarda por lote vía Events.saveAllMaintenanceFixes(). Una fila con
+ *   campos obligatorios incompletos no se descarta en silencio: llega a
+ *   Events y la validación de features/incidents/inline-fix.js reporta
+ *   qué falta. Ver ui.js → renderMaintenanceCenter() para el HTML de
+ *   cada celda de captura y features/incidents/inline-fix.js para la
+ *   tabla de campos (INLINE_FIX).
+ *
+ * CAMBIO (sep-2026 — "Reemplazar fuentes" por fuente, sin reiniciar todo):
+ *   #btnPrepReset (id conservado) ya NO llama a UI.resetAll(): ahora
+ *   entra al modo "Reemplazar fuentes" (UI.setPrepEditMode(true)), que
+ *   vuelve a mostrar la grilla de las 4 fuentes para recargar solo la
+ *   que se quiera — las demás se conservan. Si ya hay correcciones
+ *   manuales (State.edits), pide confirmación antes de entrar, porque
+ *   volver a cruzar (runMerge) reconstruye State.merged desde cero y
+ *   esas correcciones podrían perderse. Se agregan los listeners de
+ *   #btnPrepEditDone ("✓ Listo" → sale del modo) y
+ *   #btnPrepEditResetAll ("↺ Reiniciar las 4" → UI.resetAll() con
+ *   confirmación — el comportamiento anterior de #btnPrepReset). Ver
+ *   ui.js → setPrepEditMode()/updatePrepView()/_renderPdfTools() y
+ *   events.js → handlePDFs() para el resto del mecanismo.
+ *
  * Dependencias: todos los módulos de la aplicación.
  */
 import { Auth } from '../features/auth.js';
@@ -161,6 +190,10 @@ import { FactCache } from '../features/fact-cache.js';
 import { initCatalog } from '../features/catalog.js';
 import { DispatchHistory } from '../features/dispatch-history.js';
 import { CatalogStore } from '../features/catalogs/catalog-store.js';
+import { Autosave } from '../features/autosave.js';
+import { ConfirmDialog } from '../ui/confirm-dialog.js';
+import { ThemeEngine } from '../theme-engine/theme-engine.js';
+import { Motion } from '../theme-engine/motion.js';
 
 // ── Stepper — navegación entre pantallas ──
 // CAMBIO (jul-2026 — simplificación del flujo, Etapa 4): STEPS baja de
@@ -232,7 +265,7 @@ function goStep(id) {
 function wireCatalogAdmin(catalogId, containerId) {
   const container = document.getElementById(containerId);
   if (!container) return;
-  container.addEventListener('click', e => {
+  container.addEventListener('click', async e => {
     const addBtn = e.target.closest('[data-mc-role="add"]');
     if (addBtn) {
       const inputs = container.querySelectorAll('[data-mc-field]');
@@ -253,7 +286,11 @@ function wireCatalogAdmin(catalogId, containerId) {
     if (delBtn) {
       const id = delBtn.dataset.mcDel;
       if (!id) return;
-      if (!confirm('¿Eliminar este registro del catálogo? Esta acción no se puede deshacer.')) return;
+      const ok = await ConfirmDialog.confirm({
+        title: '¿Eliminar este registro del catálogo?', body: 'Esta acción no se puede deshacer.',
+        confirmLabel: 'Eliminar', danger: true
+      });
+      if (!ok) return;
       Events.deleteCatalogRow(catalogId, id);
     }
   });
@@ -264,14 +301,6 @@ function wireCatalogAdmin(catalogId, containerId) {
  */
 let _activityWired = false;
 let _pendingFirstLoginPassword = null;
-// NUEVO — protección simple del panel Administración → Usuarios.
-// Cortina de acceso, NO seguridad real (ver nota abajo): el panel de
-// gestión de cuentas es sensible pero de bajo tráfico — un prompt()
-// basta para evitar accesos accidentales o de personal no autorizado
-// casual. Se desbloquea una sola vez por sesión de navegador (no
-// persiste en localStorage — recargar vuelve a pedirla).
-let _usersPanelUnlocked = false;
-const USERS_PANEL_PASSWORD = 'rainmeter99';
 
 function wireActivityTracking() {
   if (_activityWired) return;
@@ -436,11 +465,27 @@ function wireAuthForms() {
  * exitoso o sesión restaurada (login bloqueante, ver propuesta §17).
  */
 export async function init() {
+  ConfirmDialog._wire();
   _setRoutePicker(RoutePicker);
   _setEvents(Events);
   _setWarnModalEvents(Events);
 
   UI.applyTheme(State.theme);
+
+  // Dynamic Experience — arranca el Theme Engine AQUÍ, antes de mostrar
+  // cualquier vista de auth. Hasta ahora vivía en continueInit() (ver
+  // comentario histórico más abajo) porque solo le pintaba cosas a
+  // .shell, que de cualquier forma está oculto hasta el login — pero
+  // desde que el login tiene su propia escena ambiental (#authAmbient/
+  // #authOrnament/#authStrip, ver ambient/login-stage.js), ThemeEngine
+  // tiene que haber corrido ANTES de que showAuthKnown()/showAuthFull()
+  // revelen el overlay, o el login se ve pelón (sin --t-* en :root, sin
+  // partículas, sin ornamento) aunque la sesión nunca se haya
+  // restaurado. ThemeEngine.init() es idempotente (ver sus propios
+  // guards internos), así que ya no hace falta llamarlo de nuevo en
+  // continueInit() — un solo arranque cubre login y app autenticada.
+  ThemeEngine.init();
+
   wireAuthForms();
 
   if (Auth.restoreSession()) {
@@ -471,6 +516,8 @@ export async function init() {
  * retiran (reemplazados por el flujo de auth de arriba).
  */
 async function continueInit() {
+  Motion.wireButtonRipple(); // idempotente — ver nota en motion.js
+
   renderStepper();
   document.getElementById('btnAdmin').addEventListener('click', () => goStep('admin'));
 
@@ -487,7 +534,33 @@ async function continueInit() {
   Events.setupDrop('dropWTMS', 'fileWTMS', Events.handleWTMS.bind(Events));
 
   document.getElementById('btnGoTable').addEventListener('click', () => goStep('fix'));
-  document.getElementById('btnPrepReset').addEventListener('click', () => UI.resetAll());
+
+  // ── "Reemplazar fuentes" (sep-2026) — ver nota de cabecera. El id
+  // #btnPrepReset se conserva, pero ya NO reinicia todo: entra al modo
+  // por fuente. Si hay correcciones manuales registradas, se pide
+  // confirmación porque volver a cruzar reconstruye State.merged desde
+  // cero (State.edits no se limpia tras un merge, así que el aviso
+  // puede aparecer aunque esas ediciones ya se hubieran perdido).
+  document.getElementById('btnPrepReset').addEventListener('click', async () => {
+    if (State.edits.length) {
+      const ok = await ConfirmDialog.confirm({
+        title: `Ya hiciste ${State.edits.length} corrección(es) manual(es)`,
+        body: 'Al reemplazar una fuente se vuelve a cruzar todo y esas correcciones podrían perderse. ¿Continuar?',
+        confirmLabel: 'Continuar', danger: true
+      });
+      if (!ok) return;
+    }
+    UI.setPrepEditMode(true);
+  });
+  document.getElementById('btnPrepEditDone')?.addEventListener('click', () => UI.setPrepEditMode(false));
+  document.getElementById('btnPrepEditResetAll')?.addEventListener('click', async () => {
+    const ok = await ConfirmDialog.confirm({
+      title: '¿Reiniciar las 4 fuentes?', body: 'Se borrará todo lo cargado en esta sesión.',
+      confirmLabel: 'Reiniciar todo', danger: true
+    });
+    if (!ok) return;
+    UI.resetAll();
+  });
 
   document.getElementById('btnParse').addEventListener('click',      () => Events.handlePaste());
   document.getElementById('btnPasteClear').addEventListener('click', () => Events.clearPaste());
@@ -501,13 +574,25 @@ async function continueInit() {
   document.getElementById('btnExport').addEventListener('click', () => Events.handleExport());
 
   document.getElementById('btnTheme').addEventListener('click', () =>
-    UI.applyTheme(State.theme === 'dark' ? 'light' : 'dark'));
+    ThemeEngine.setMode(State.theme === 'dark' ? 'light' : 'dark'));
 
-  document.querySelectorAll('.theme-opt[data-theme]').forEach(el => {
-    el.addEventListener('click', () => UI.applyTheme(el.dataset.theme));
+  // Modo (Automático/Claro/Oscuro) — fija sd_theme_mode, nunca toca
+  // data-theme directamente (eso lo resuelve ThemeEngine → UI.applyTheme).
+  document.querySelectorAll('#cfgModeOpts .theme-opt[data-mode]').forEach(el => {
+    el.addEventListener('click', () => ThemeEngine.setMode(el.dataset.mode));
+  });
+  // Intensidad (Sutil/Intenso) — el grupo "Tema" (#cfgThemeOpts) se
+  // genera Y se cablea solo, dentro de ThemeEngine.init() (ver
+  // theme-engine.js — renderThemeOptionsGrid()), porque su contenido es
+  // dinámico (uno por entrada de theme-registry.js).
+  document.querySelectorAll('#cfgIntensityOpts .theme-opt[data-intensity]').forEach(el => {
+    el.addEventListener('click', () => ThemeEngine.setIntensity(el.dataset.intensity));
   });
 
-  document.getElementById('tbUser').addEventListener('click', () => UI.openModal());
+  document.getElementById('tbUser').addEventListener('click', () => {
+    UI.openModal();
+    ThemeEngine.syncControls(); // refleja Tema/Modo/Intensidad por si nada los recalculó desde el último cambio
+  });
 
   // ── Configuración — Mi cuenta (reemplaza el guardado de nombre libre) ──
   document.getElementById('nameModalBtn').addEventListener('click', async () => {
@@ -534,7 +619,7 @@ async function continueInit() {
     if (newPassword) {
       const pwResult = await Auth.changePassword(currentPassword, newPassword);
       if (!pwResult.ok) {
-        statusEl.textContent = 'Nombre guardado, pero no se pudo cambiar la contraseña.'; statusEl.style.color = 'var(--amber-deep)'; return;
+        statusEl.textContent = 'Nombre guardado, pero no se pudo cambiar la contraseña.'; statusEl.style.color = 'var(--amber-ink)'; return;
       }
     }
     UI.setUser(State.currentUser);
@@ -570,12 +655,17 @@ async function continueInit() {
   const btnGoFix = document.getElementById('btnGoFix');
   if (btnGoFix) btnGoFix.addEventListener('click', () => goStep('fix'));
 
-  const handleFixCardClick = e => {
+  const handleFixCardClick = async e => {
     const confirmBtn = e.target.closest('.fix-confirm-btn');
     if (confirmBtn) {
       const ruta  = confirmBtn.dataset.confirmRuta;
       const dette = confirmBtn.dataset.confirmDette;
-      if (!confirm(`¿Confirmas que la entrega ${dette || '—'} de la ruta ${ruta} NO se realizará?\n\nSe eliminará por completo del archivo final y del historial de Supabase — esta acción no se puede deshacer una vez exportado el día.`)) return;
+      const ok = await ConfirmDialog.confirm({
+        title: `¿Confirmas que la entrega ${dette || '—'} de la ruta ${ruta} NO se realizará?`,
+        body: 'Se eliminará por completo del archivo final y del historial de Supabase — esta acción no se puede deshacer una vez exportado el día.',
+        confirmLabel: 'Confirmar y eliminar', danger: true
+      });
+      if (!ok) return;
       Events.confirmExcludedDette(ruta, dette);
       return;
     }
@@ -614,20 +704,22 @@ async function continueInit() {
       inputs.forEach(inp => { const val = inp.value.trim(); if (val) fields[inp.dataset.field] = val; });
       if (!Object.keys(fields).length) {
         const first = card.querySelector('.fix-marchamo-input');
-        if (first) { first.focus(); first.classList.add('fix-input-error'); }
+        if (first) { first.focus(); first.classList.add('fix-input-error'); Motion.shake(card); }
         return;
       }
       const rowIds = JSON.parse(card.dataset.fixRowids || '[]');
-      EditSystem.quickFixMulti(rowIds, fields);
+      Motion.runSaveSequence(card, saveMarchBtn, () => EditSystem.quickFixMulti(rowIds, fields));
       return;
     }
     const saveBtn = e.target.closest('.fix-save');
     if (saveBtn) {
       const card  = saveBtn.closest('.fix-card');
       const input = card.querySelector('.fix-input');
-      if (!input.value.trim()) { input.focus(); input.classList.add('fix-input-error'); return; }
+      if (!input.value.trim()) { input.focus(); input.classList.add('fix-input-error'); Motion.shake(card); return; }
       const rowIds = JSON.parse(saveBtn.dataset.fixRowids || '[]');
-      EditSystem.quickFix(rowIds, saveBtn.dataset.fixKey, input.value);
+      const fixKey = saveBtn.dataset.fixKey;
+      const fixVal = input.value;
+      Motion.runSaveSequence(card, saveBtn, () => EditSystem.quickFix(rowIds, fixKey, fixVal));
       return;
     }
     const reviewBtn = e.target.closest('.fix-review-btn');
@@ -654,15 +746,6 @@ async function continueInit() {
 
     const btn = e.target.closest('.admin-nav-item');
     if (!btn) return;
-
-    // NUEVO — gate de contraseña para el panel Usuarios. Ver nota de
-    // cabecera junto a _usersPanelUnlocked/USERS_PANEL_PASSWORD.
-    if (btn.dataset.admin === 'users' && !_usersPanelUnlocked) {
-      const pass = prompt('Este panel está protegido. Ingresa la contraseña para continuar:');
-      if (pass === null) return; // canceló — no hace nada, no cambia de panel
-      if (pass !== USERS_PANEL_PASSWORD) { alert('Contraseña incorrecta.'); return; }
-      _usersPanelUnlocked = true;
-    }
 
     document.querySelectorAll('.admin-nav-item').forEach(b => b.classList.toggle('active', b === btn));
     document.querySelectorAll('.admin-panel').forEach(p => p.classList.toggle('active', p.dataset.adminPanel === btn.dataset.admin));
@@ -721,18 +804,65 @@ async function continueInit() {
     }
     const resetBtn = e.target.closest('[data-user-reset]');
     if (resetBtn) {
-      const newPass = prompt('Nueva contraseña temporal para este usuario:');
+      const newPass = await ConfirmDialog.prompt({
+        title: 'Restablecer contraseña', body: 'Nueva contraseña temporal para este usuario:',
+        placeholder: 'Nueva contraseña', confirmLabel: 'Guardar'
+      });
       if (!newPass) return;
       await Auth.adminResetPassword(resetBtn.dataset.userId, newPass);
       UI.setUsersStatus('✓ Contraseña restablecida', 'ok');
     }
   });
 
-  document.getElementById('mcOpenTbody').addEventListener('click', e => {
+  // ── Centro de Mantenimiento — resolver + captura rápida (sep-2026) ──
+  // Ver nota de cabecera "CAMBIO (sep-2026 — captura rápida...)".
+  const mcTbody = document.getElementById('mcOpenTbody');
+
+  /** Junta { columna: texto } de los inputs de captura de UNA incidencia. */
+  const collectFixValues = id => {
+    const values = {};
+    mcTbody.querySelectorAll(`[data-mc-fix-input="${CSS.escape(id)}"]`).forEach(inp => {
+      values[inp.dataset.mcCol] = inp.value;
+    });
+    return values;
+  };
+  const hasAnyValue = values => Object.values(values).some(v => String(v).trim());
+
+  mcTbody.addEventListener('click', async e => {
+    const fixBtn = e.target.closest('[data-mc-fix-save]');
+    if (fixBtn) {
+      const id     = fixBtn.dataset.mcFixSave;
+      const values = collectFixValues(id);
+      if (!hasAnyValue(values)) {
+        mcTbody.querySelector(`[data-mc-fix-input="${CSS.escape(id)}"]`)?.focus();
+        return;
+      }
+      Events.saveMaintenanceFix(id, values);
+      return;
+    }
     const btn = e.target.closest('[data-mc-resolve]');
     if (!btn) return;
-    if (!confirm('¿Marcar esta incidencia como resuelta manualmente? Esta acción no se puede deshacer.')) return;
+    const ok = await ConfirmDialog.confirm({
+      title: '¿Marcar esta incidencia como resuelta?', body: 'Esta acción no se puede deshacer manualmente.',
+      confirmLabel: 'Marcar resuelta', danger: false
+    });
+    if (!ok) return;
     Events.resolveIncident(btn.dataset.mcResolve);
+  });
+  mcTbody.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const inp = e.target.closest('[data-mc-fix-input]');
+    if (!inp) return;
+    const id     = inp.dataset.mcFixInput;
+    const values = collectFixValues(id);
+    if (hasAnyValue(values)) Events.saveMaintenanceFix(id, values);
+  });
+  document.getElementById('btnMcSaveAll')?.addEventListener('click', () => {
+    const ids = [...new Set([...mcTbody.querySelectorAll('[data-mc-fix-input]')].map(inp => inp.dataset.mcFixInput))];
+    const entries = ids
+      .map(id => ({ id, values: collectFixValues(id) }))
+      .filter(en => hasAnyValue(en.values));
+    Events.saveAllMaintenanceFixes(entries);
   });
   document.getElementById('btnMcToggleResolved').addEventListener('click', () => Events.toggleResolvedIncidents());
 
@@ -740,7 +870,11 @@ async function continueInit() {
   document.getElementById('btnOpenSettingsAdmin')?.addEventListener('click', () => UI.openModal());
 
   document.getElementById('btnCacheHistClear').addEventListener('click', async () => {
-    if (!confirm('¿Eliminar todo el caché histórico de facturas? Esta acción no se puede deshacer.')) return;
+    const ok = await ConfirmDialog.confirm({
+      title: '¿Eliminar todo el caché histórico de facturas?', body: 'Esta acción no se puede deshacer.',
+      confirmLabel: 'Eliminar todo', danger: true
+    });
+    if (!ok) return;
     await FactCache.clear();
     await FactCache.clearLog();
     UI.renderCacheHistory();
@@ -821,6 +955,26 @@ async function continueInit() {
   State.todaySession = todaySession;
   UI.renderTodayBanner(todaySession);
   UI.applyMode();
+
+  // NUEVO — recuperación de Autosave (ver features/autosave.js). Va al
+  // final de continueInit(), con todo ya pintado/cableado, para que
+  // Events.restoreAutosave() encuentre la UI lista para re-renderizar
+  // encima. Si el usuario descarta, se limpia el snapshot de una vez
+  // (evita volver a preguntar en el próximo refresh de esta misma sesión
+  // ya descartada).
+  const snapshot = Autosave.peek();
+  if (snapshot) {
+    const mins = Math.max(1, Math.round((Date.now() - snapshot.savedAt) / 60000));
+    const recover = await ConfirmDialog.confirm({
+      title: 'Se encontró una sesión sin guardar',
+      body: `Hay ${snapshot.rowCount} fila(s) y ${snapshot.editCount} corrección(es) manual(es) ` +
+            `de hace ${mins} minuto(s)${snapshot.savedBy ? ` (usuario: ${snapshot.savedBy})` : ''}, ` +
+            `sin exportar. ¿Deseas recuperarla y continuar donde te quedaste?`,
+      confirmLabel: 'Recuperar', cancelLabel: 'Descartar'
+    });
+    if (recover) Events.restoreAutosave();
+    else Autosave.clear();
+  }
 
   // First-run/nameModal de nombre libre — RETIRADO. La identidad ahora
   // se resuelve por completo en el flujo de auth, antes de llegar aquí.

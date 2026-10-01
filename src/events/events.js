@@ -66,8 +66,8 @@
  *   descuente del conteo esperado las entregas excluidas confirmadas en
  *   ESTA corrida de runMerge() (ver processors/merge.js), evitando una
  *   alerta crítica falsa cuando la diferencia se explica por completo
- *   por una exclusión legítima (ej. DETTE cancelada y confirmada por el
- *   usuario). No cambia ningún otro comportamiento de triggerMerge().
+ *   por una exclusión legítima (ej. DETTE cancelada y confirmada). No
+ *   cambia ningún otro comportamiento de triggerMerge().
  *
  * FIX DE INTEGRIDAD DE DATOS (jul-2026) — handlePDFs():
  *   Antes se indexaba SIEMPRE `ruta + '|' + r.factura` y
@@ -163,6 +163,45 @@
  *   informativo — no participa en runMerge()/runSVE() ni en el gate de
  *   exportación, ver features/source-check.js para el detalle completo
  *   de diseño.
+ *
+ * CAMBIO (sep-2026 — captura rápida en el Centro de Mantenimiento):
+ *   Se agregan saveMaintenanceFix()/saveAllMaintenanceFixes() y la
+ *   propiedad Events._maintIncidents (última lista cargada por
+ *   loadMaintenanceCenter(), para resolver id → incidencia sin volver a
+ *   consultar Supabase). Permiten resolver una incidencia de registro
+ *   faltante en catálogo escribiendo los datos junto al valor faltante
+ *   (placas de tractor/remolque en Pool Real, formato/tienda/estado en
+ *   Ventana de Recibo) — la validación, el alta en el catálogo y el
+ *   cierre de la incidencia viven en features/incidents/inline-fix.js
+ *   (ver su cabecera y su tabla INLINE_FIX); este módulo solo
+ *   orquesta: llama a saveInlineFix(), refresca la UI de los catálogos
+ *   afectados, re-dispara el merge para que el dato aparezca de
+ *   inmediato en el archivo, y recarga el panel. En el guardado por
+ *   lote el merge se dispara UNA sola vez al final, no por incidencia.
+ *
+ * CAMBIO (sep-2026 — carga incremental de PDFs y "Reemplazar fuentes"):
+ *   handlePDFs() ya NO se limita a "sobrescribir claves": ahora
+ *   - AGREGA a los PDFs existentes por defecto (comportamiento que ya
+ *     tenía, pero ahora explícito y con estado acumulado en pantalla);
+ *   - si una ruta se vuelve a subir, REEMPLAZA sus bloques anteriores
+ *     (borra sus claves viejas de State.pdfData antes de indexar las
+ *     nuevas) — antes, si la factura/destino de esa ruta cambiaba, las
+ *     claves viejas quedaban como bloques huérfanos que contaban como
+ *     candidatos extra en el fallback de merge.js (falso
+ *     'pdf_ambiguous');
+ *   - si el checkbox #pdfReplaceAll está marcado, construye un Map
+ *     nuevo y solo reemplaza State.pdfData si al menos un PDF del lote
+ *     se procesó bien (si todo falla se conservan los anteriores). El
+ *     checkbox se desmarca solo tras cada carga.
+ *   El mensaje de estado de la tarjeta PDF ahora refleja el ACUMULADO
+ *   (rutas/entregas en memoria), no solo el lote actual. Ver también
+ *   ui.js → setPrepEditMode()/_renderPdfTools() y core/app.js.
+ *
+ *   NOTA (riesgo conocido): IncidentStore.sync('cita_unrecognized',
+ *   ['pdf'], …) auto-resuelve patrones abiertos que no aparecen en el
+ *   lote actual. Con cargas incrementales, un lote pequeño puede cerrar
+ *   patrones de PDFs cargados en lotes anteriores. Es telemetría
+ *   informativa; si estorba, acumular los misses en sesión.
  */
 import { State } from '../core/state.js';
 import { normOp } from '../utils/format.js';
@@ -171,6 +210,7 @@ import { EditSystem } from '../editing/edit-system.js';
 import { WarnModal } from '../editing/warn-modal.js';
 import { RoutePicker } from '../editing/route-picker.js';
 import { FactCache } from '../features/fact-cache.js';
+import { Autosave } from '../features/autosave.js';
 import { pdfExtract, parsePDF } from '../processors/pdf.js';
 import { processXLS } from '../processors/excel.js';
 import { processPaste } from '../processors/paste.js';
@@ -183,7 +223,9 @@ import { DispatchHistory } from '../features/dispatch-history.js';
 import { CatalogStore } from '../features/catalogs/catalog-store.js';
 import { IncidentStore } from '../features/incidents/incident-store.js';
 import { INCIDENT_TYPES } from '../features/incidents/incident-types.js';
+import { saveInlineFix } from '../features/incidents/inline-fix.js';
 import { compareExcelPdf } from '../features/source-check.js';
+import { Motion } from '../theme-engine/motion.js';
 
 export const Events = {
 
@@ -260,6 +302,16 @@ export const Events = {
     // cruda nueva sale del modo "sesión reabierta" — vuelve al flujo
     // normal de captura. Ver nota de cabecera de este archivo.
     State.reviewSessionId = null;
+
+    // NUEVO (sep-2026 — carga incremental): por defecto AGREGA a
+    // State.pdfData. Con #pdfReplaceAll marcado se construye un Map
+    // nuevo y solo reemplaza al actual si al menos un PDF se procesó
+    // bien (ver más abajo). Ver nota de cabecera de este archivo.
+    const cbReplace  = document.getElementById('pdfReplaceAll');
+    const replaceAll = !!(cbReplace && cbReplace.checked);
+    const target     = replaceAll ? new Map() : State.pdfData;
+    const updatedRutas = new Set();
+
     UI.showProgress('Procesando PDFs…');
     UI.setSourceProcessing('pdf', true);
     const errors = [];
@@ -278,14 +330,27 @@ export const Events = {
           // processors/pdf.js. `parsed` conserva exactamente el mismo
           // contenido/uso que antes (se sigue iterando igual abajo).
           const { rows: parsed, unrecognizedCitas } = parsePDF(extracted, files[i].name);
+
+          // NUEVO (sep-2026): una ruta re-subida REEMPLAZA sus bloques
+          // anteriores — se borran sus claves viejas para que no
+          // queden bloques huérfanos que cuenten como candidatos extra
+          // en el fallback de merge.js (falso 'pdf_ambiguous').
+          // Borrar durante la iteración de un Map es seguro en JS.
+          if (parsed.length) {
+            const incoming = new Set(parsed.map(r => r.ruta));
+            for (const [k, v] of target) {
+              if (incoming.has(v.ruta)) { target.delete(k); updatedRutas.add(v.ruta); }
+            }
+          }
+
           for (const r of parsed) {
             // FIX (jul-2026) — ver nota de cabecera "FIX DE INTEGRIDAD DE
             // DATOS": nunca indexar una clave con factura/destino vacío.
             // Una entrega sin ese dato detectado queda fuera del match
             // específico (correcto: no hay certeza) en vez de arriesgarse
             // a colisionar con otra entrega de la misma ruta.
-            if (r.factura) State.pdfData.set(r.ruta + '|' + r.factura,   r);
-            if (r.destino) State.pdfData.set(r.ruta + '|D|' + r.destino, r);
+            if (r.factura) target.set(r.ruta + '|' + r.factura,   r);
+            if (r.destino) target.set(r.ruta + '|D|' + r.destino, r);
           }
           // NUEVO (Fase 0): cada candidato ya trae `ruta`/`destino`/
           // `signature` — se traduce al shape genérico que espera
@@ -306,8 +371,27 @@ export const Events = {
     }
     UI.hideProgress();
 
-    const uniqueCount = new Set([...State.pdfData.keys()].filter(k => !k.includes('|D|'))).size;
-    UI.setSourceStatus('pdf', true, '✓ Completo', `${ok} archivos · ${uniqueCount} entregas`);
+    // NUEVO (sep-2026): modo "reemplazar todos" — el Map nuevo solo
+    // sustituye al actual si al menos un PDF se procesó bien; si todo
+    // falló, se conserva lo anterior. El checkbox se desmarca siempre
+    // tras usarse para no dejar el modo activo por accidente.
+    if (replaceAll) {
+      if (ok > 0) State.pdfData = target;
+      else errors.push('Ningún PDF válido — se conservaron los PDFs anteriores.');
+    }
+    if (cbReplace) cbReplace.checked = false;
+
+    // El estado refleja el ACUMULADO en memoria, no solo este lote.
+    if (State.pdfData.size) {
+      const blocks      = new Set(State.pdfData.values());
+      const rutasCount  = new Set([...blocks].map(b => b.ruta)).size;
+      const uniqueCount = new Set([...State.pdfData.keys()].filter(k => !k.includes('|D|'))).size;
+      const note = (!replaceAll && updatedRutas.size)
+        ? ` · ${updatedRutas.size} ruta${updatedRutas.size > 1 ? 's' : ''} actualizada${updatedRutas.size > 1 ? 's' : ''}`
+        : '';
+      UI.setSourceStatus('pdf', true, '✓ Completo',
+        `+${ok} archivo${ok !== 1 ? 's' : ''} · ${rutasCount} rutas · ${uniqueCount} entregas${note}`);
+    }
 
     if (errors.length) UI.showErrors(errors);
 
@@ -334,6 +418,9 @@ export const Events = {
     UI.showProgress('Leyendo Excel…');
     UI.setSourceProcessing('xls', true);
     try {
+      // processXLS() lanza Error si falta el concentrado de facturas
+      // (obligatorio, sep-2026) — antes de asignar cualquier State, así
+      // que un Excel rechazado no pisa uno válido cargado antes.
       const { rows, factData, ruteoName, factSheetLabel } = await processXLS(file);
       State.xlsData  = rows;
       State.factData = factData;
@@ -503,6 +590,7 @@ export const Events = {
       UI.renderExportScreen();
       UI.updateHealthRail();
       UI.applyMode();
+      Autosave.save(State);
     }, 100);
   },
 
@@ -555,12 +643,23 @@ export const Events = {
       await DispatchHistory.finalizeSession(State.merged, { ...auditMeta, ts, user });
     } catch (e) {
       console.warn('[DispatchHistory] No se pudo guardar el historial:', e.message);
+      Motion.toast('No se pudo guardar en el historial (el archivo sí se exportó).', 'warn');
     }
     UI.setExportBusy(false);
 
     exportXLSX();
-    Events.refreshTodayBanner();
-    UI.showCelebrate();
+    // Secuencia de éxito (sección 6): botón con checkmark + ráfaga de
+    // partículas con los colores del tema activo, y RECIÉN después el
+    // modal de celebración — se difiere 700ms (duración de la ráfaga)
+    // para que se vea la secuencia completa en vez de que el modal tape
+    // el botón de inmediato. Autosave.clear()/refreshTodayBanner() no
+    // tienen urgencia de milisegundos, se difieren junto con el modal.
+    Motion.exportSuccess(document.getElementById('btnExport'));
+    setTimeout(() => {
+      Autosave.clear();
+      Events.refreshTodayBanner();
+      UI.showCelebrate();
+    }, 700);
   },
 
   async refreshTodayBanner() {
@@ -651,6 +750,42 @@ export const Events = {
     UI.applyMode();
   },
 
+  /**
+   * Recupera un snapshot de Autosave (ver features/autosave.js) tras un
+   * refresh/crash accidental a mitad de captura. Mismo criterio de
+   * render que reopenSession() (arriba): NO corre runMerge() - las
+   * ediciones manuales ya están horneadas dentro de State.merged y
+   * runMerge() las perdería. A diferencia de reopenSession(), esto NO
+   * es una sesión de revisión del Historial (no toca reviewSessionId) -
+   * el usuario sigue en su captura normal, solo que restaurada.
+   * @returns {boolean} false si no había snapshot que restaurar
+   */
+  restoreAutosave() {
+    if (!Autosave.restoreInto(State)) return false;
+
+    UI.updatePrepView([]);
+    UI.renderTable();
+    UI.updateStats();
+    UI.setActionsEnabled(true);
+
+    const screenCount = State.xlsData ? State.xlsData.length : 0;
+    const sveResult = runSVE(State.merged, screenCount, State.excludedCount);
+    if (sveResult) {
+      State.sveIssues = sveResult.issues;
+      UI.renderSVE(sveResult.issues, sveResult.quality, sveResult.nCrit, sveResult.nWarn, sveResult.nInfo, sveResult.nPass);
+    } else {
+      State.sveIssues = [];
+      UI.resetSVE();
+    }
+    UI.renderTable();
+    UI.renderFixList();
+    UI.renderQualityScreen();
+    UI.renderExportScreen();
+    UI.updateHealthRail();
+    UI.applyMode();
+    return true;
+  },
+
   async previewTodaySession() {
     const session = await DispatchHistory.getTodaySession();
     if (!session) return;
@@ -719,6 +854,14 @@ export const Events = {
   // ═══════════════════════════════════════════════════════════════
 
   /**
+   * Última lista de incidencias abiertas cargada por
+   * loadMaintenanceCenter() — NUEVO (sep-2026). Permite resolver
+   * id → incidencia completa (source_id/key_name/key_value) al guardar
+   * una captura rápida, sin volver a consultar Supabase.
+   */
+  _maintIncidents: [],
+
+  /**
    * Carga las incidencias abiertas (ya ordenadas por prioridad, ver
    * IncidentStore.listOpen()) y las pinta en el panel de
    * Administración → Centro de Mantenimiento. Se llama cada vez que el
@@ -736,6 +879,7 @@ export const Events = {
     UI.setMaintenanceStatus('Cargando…', 'ok');
     try {
       const incidents = await IncidentStore.listOpen();
+      Events._maintIncidents = incidents;
       UI.renderMaintenanceCenter(incidents);
       UI.setMaintenanceStatus('', '');
     } catch (e) {
@@ -756,6 +900,60 @@ export const Events = {
       await Events.loadMaintenanceCenter();
     } catch (e) {
       UI.setMaintenanceStatus('Error: ' + e.message, 'err');
+    }
+  },
+
+  /**
+   * Captura rápida de UNA incidencia de registro faltante en catálogo
+   * (placas de tractor/remolque en Pool Real, formato/tienda/estado en
+   * Ventana de Recibo) — NUEVO (sep-2026). Ver nota de cabecera de este
+   * archivo y features/incidents/inline-fix.js.
+   * @param {string} id — uuid de la incidencia en admin_incidents
+   * @param {Object<string,string>} values — { columnaCanonica: texto } capturado en la fila
+   */
+  async saveMaintenanceFix(id, values) {
+    const inc = Events._maintIncidents.find(i => i.id === id);
+    if (!inc) return;
+    UI.setMaintenanceStatus('Guardando…', 'ok');
+    try {
+      await saveInlineFix(inc, values, State.user);
+      UI.renderCatalogAdmin(inc.source_id);
+      UI.renderCatalogMasterStatus(inc.source_id);
+      if (State.merged.length) Events.triggerMerge();
+      await Events.loadMaintenanceCenter();
+      UI.setMaintenanceStatus('✓ Registro guardado', 'ok');
+    } catch (e) {
+      UI.setMaintenanceStatus(e.message, 'err');
+    }
+  },
+
+  /**
+   * Guardado por lote de varias capturas rápidas — NUEVO (sep-2026).
+   * Procesa en secuencia (un error en una fila no detiene a las demás)
+   * y dispara el merge UNA sola vez al final, no por incidencia.
+   * @param {Array<{id:string, values:Object<string,string>}>} entries
+   */
+  async saveAllMaintenanceFixes(entries) {
+    if (!entries.length) { UI.setMaintenanceStatus('No hay capturas pendientes de guardar.', 'err'); return; }
+    UI.setMaintenanceStatus(`Guardando ${entries.length} registro${entries.length > 1 ? 's' : ''}…`, 'ok');
+    let okCount = 0;
+    const errors = [];
+    for (const { id, values } of entries) {
+      const inc = Events._maintIncidents.find(i => i.id === id);
+      if (!inc) continue;
+      try { await saveInlineFix(inc, values, State.user); okCount++; }
+      catch (e) { errors.push(`${inc.key_value}: ${e.message}`); }
+    }
+    ['ventanaRecibo', 'poolReal'].forEach(cid => {
+      UI.renderCatalogAdmin(cid);
+      UI.renderCatalogMasterStatus(cid);
+    });
+    if (okCount && State.merged.length) Events.triggerMerge();
+    await Events.loadMaintenanceCenter();
+    if (errors.length) {
+      UI.setMaintenanceStatus(`✓ ${okCount} guardado(s) · ${errors.length} con error — ${errors[0]}`, 'err');
+    } else {
+      UI.setMaintenanceStatus(`✓ ${okCount} registro${okCount > 1 ? 's' : ''} guardado${okCount > 1 ? 's' : ''}`, 'ok');
     }
   },
 
