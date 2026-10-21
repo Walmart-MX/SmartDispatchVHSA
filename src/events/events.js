@@ -212,9 +212,16 @@ import { RoutePicker } from '../editing/route-picker.js';
 import { FactCache } from '../features/fact-cache.js';
 import { Autosave } from '../features/autosave.js';
 import { pdfExtract, parsePDF } from '../processors/pdf.js';
+import { detectTipoCarga, clasificarTipoCarga } from '../processors/pdf-trip-type.js';
 import { processXLS } from '../processors/excel.js';
 import { processPaste } from '../processors/paste.js';
 import { processWTMS } from '../processors/wtms.js';
+import { processInvoiceReport } from '../processors/invoice-report.js';
+import { applyDesco } from '../processors/desco.js';
+import { saveMode } from '../features/source-mode.js';
+import { MODE_SIN_MACRO } from '../core/constants.js';
+import { ModeModal } from '../ui/mode-modal.js';
+import { ConfirmDialog } from '../ui/confirm-dialog.js';
 import { runMerge } from '../processors/merge.js';
 import { runSVE } from '../features/validation/sve.js';
 import { exportXLSX } from '../features/export.js';
@@ -224,7 +231,9 @@ import { CatalogStore } from '../features/catalogs/catalog-store.js';
 import { IncidentStore } from '../features/incidents/incident-store.js';
 import { INCIDENT_TYPES } from '../features/incidents/incident-types.js';
 import { saveInlineFix } from '../features/incidents/inline-fix.js';
+import { CitaPatternStore } from '../features/citas/cita-pattern-store.js';
 import { compareExcelPdf } from '../features/source-check.js';
+import { reconcileUnifiedRoutes } from '../processors/unified-routes.js';
 import { Motion } from '../theme-engine/motion.js';
 
 export const Events = {
@@ -296,7 +305,11 @@ export const Events = {
   },
 
   async handlePDFs(files) {
-    files = files.filter(f => f.type === 'application/pdf');
+    // CAMBIO (oct-2026 — seleccion de carpeta completa): se acepta
+    // tambien por extension, no solo por `.type` — archivos elegidos
+    // via selector de carpeta (webkitdirectory) a veces llegan con
+    // `.type` vacio dependiendo del origen (unidades de red, etc).
+    files = files.filter(f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
     if (!files.length) return;
     // NUEVO (ago-2026 — "reabrir para corregir"): cargar una fuente
     // cruda nueva sale del modo "sesión reabierta" — vuelve al flujo
@@ -316,6 +329,15 @@ export const Events = {
     UI.setSourceProcessing('pdf', true);
     const errors = [];
     let ok = 0;
+    // NUEVO (oct-2026 — filtro ida/retorno, ver processors/pdf-trip-type.js):
+    // al permitir seleccionar la carpeta completa del día operativo,
+    // entran mezclados los PDFs de retorno (viaje vacío de vuelta a
+    // CeDis) — no corresponden a ninguna ruta real del Excel del día y
+    // ensuciarían el merge con "rutas fantasma". Se clasifican ANTES de
+    // correr el parseo pesado de pdf.js; un PDF de ida sigue el camino
+    // de siempre sin ningún cambio de comportamiento.
+    const retornoSkipped = [];
+    const unknownSkipped = [];
     // NUEVO (Fase 0 — telemetría de citas no reconocidas, ago-2026):
     // acumula los candidatos de TODOS los PDFs de este lote — ver
     // processors/pdf.js → parsePDF() (campo `unrecognizedCitas`) y la
@@ -323,8 +345,24 @@ export const Events = {
     const citaMissesRaw = [];
     try {
       for (let i = 0; i < files.length; i++) {
+        UI.setProgress(i + 1, files.length, files[i].name);
         try {
-          const extracted = await pdfExtract(files[i]);
+          // Clasificacion liviana ANTES del parseo completo — si falla
+          // (PDF raro, formato inesperado) se sigue de largo y se deja
+          // que el parseo completo de abajo decida/reporte el error,
+          // en vez de descartar un archivo legitimo por un hipo del
+          // pre-filtro.
+          const tipoCarga = await detectTipoCarga(files[i]).catch(() => null);
+          if (tipoCarga !== null) {
+            const clase = clasificarTipoCarga(tipoCarga);
+            if (clase === 'retorno') { retornoSkipped.push(files[i].name); continue; }
+            if (clase === 'desconocido') {
+              unknownSkipped.push(`${files[i].name} (Tipo de carga: "${tipoCarga || '—'}")`);
+              continue;
+            }
+          }
+
+          const extracted = await pdfExtract(files[i], State.citaPatterns);
           // CAMBIO (Fase 0): parsePDF() ahora devuelve
           // { rows, unrecognizedCitas } en vez de un array plano — ver
           // processors/pdf.js. `parsed` conserva exactamente el mismo
@@ -364,12 +402,28 @@ export const Events = {
           if (parsed.length) ok++;
           else errors.push('Sin datos: ' + files[i].name);
         } catch (e) { errors.push('Error: ' + files[i].name + ' — ' + e.message); }
-        UI.setProgress(i + 1, files.length, files[i].name);
       }
     } finally {
       UI.setSourceProcessing('pdf', false);
     }
     UI.hideProgress();
+
+    // NUEVO (oct-2026 — filtro ida/retorno): resumen NO bloqueante cuando
+    // se detectó al menos un PDF de retorno en el lote (típicamente al
+    // seleccionar la carpeta completa del día operativo) — nunca en
+    // silencio, pero tampoco como error, es el comportamiento esperado.
+    if (retornoSkipped.length) {
+      const n = retornoSkipped.length;
+      Motion.toast(
+        `${n} PDF${n !== 1 ? 's' : ''} de retorno detectado${n !== 1 ? 's' : ''} y omitido${n !== 1 ? 's' : ''} automáticamente (viaje vacío de vuelta, no corresponde a ninguna ruta del día).`,
+        'info'
+      );
+    }
+    // Tipo de carga NO reconocido (ni ida ni retorno conocido) SÍ se
+    // trata como advertencia explícita en el log de errores — a
+    // diferencia de un retorno confirmado, acá no hay certeza de que
+    // corresponda excluirlo, hace falta revisión manual.
+    unknownSkipped.forEach(msg => errors.push('Tipo de carga no reconocido, se omitió — revisar manualmente: ' + msg));
 
     // NUEVO (sep-2026): modo "reemplazar todos" — el Map nuevo solo
     // sustituye al actual si al menos un PDF se procesó bien; si todo
@@ -418,21 +472,27 @@ export const Events = {
     UI.showProgress('Leyendo Excel…');
     UI.setSourceProcessing('xls', true);
     try {
-      // processXLS() lanza Error si falta el concentrado de facturas
-      // (obligatorio, sep-2026) — antes de asignar cualquier State, así
-      // que un Excel rechazado no pisa uno válido cargado antes.
-      const { rows, factData, ruteoName, factSheetLabel } = await processXLS(file);
-      State.xlsData  = rows;
-      State.factData = factData;
-
-      State.cacheUpdating = true;
-      UI.renderCacheHistory();
-      FactCache.persist(factData).finally(() => {
-        State.cacheUpdating = false;
+      // processXLS() lanza Error si el archivo no corresponde al MODO elegido
+      // (ver features/source-mode.js) o, en modo macro, si falta el concentrado
+      // de facturas (obligatorio, sep-2026) — antes de asignar cualquier State,
+      // así que un Excel rechazado no pisa uno válido cargado antes. En modo
+      // sin macro devuelve factData=null: no hay concentrado (el GLS sale del
+      // Reporte de Facturación y la hora de facturación queda en blanco).
+      const { rows, factData, factSheetLabel } = await processXLS(file, { mode: State.mode || undefined });
+      State.xlsSource = rows;   // antes del paso DESCO — ver triggerMerge()
+      State.xlsData   = rows;
+      State.xlsLabel  = `${rows.length} rutas · ${factSheetLabel}`;
+      if (factData) {
+        State.factData = factData;
+        State.cacheUpdating = true;
         UI.renderCacheHistory();
-      });
+        FactCache.persist(factData).finally(() => {
+          State.cacheUpdating = false;
+          UI.renderCacheHistory();
+        });
+      }
 
-      UI.setSourceStatus('xls', true, '✓ Completo', `${rows.length} rutas · ${factSheetLabel}`);
+      UI.setSourceStatus('xls', true, '\u2713 Completo', State.xlsLabel);
 
       UI.hideProgress();
       Events.triggerMerge();
@@ -442,6 +502,40 @@ export const Events = {
     } finally {
       UI.setSourceProcessing('xls', false);
     }
+  },
+
+  // ── Modo de carga: MACRO vs SIN MACRO (oct-2026) — ver features/source-mode.js ──
+  // Abre el modal de elección. `dismissible:false` en el primer arranque (no se
+  // puede trabajar sin elegir); true al cambiar desde Preparación.
+  async chooseMode({ dismissible = true } = {}) {
+    const picked = await ModeModal.choose({ current: State.mode, dismissible });
+    if (picked) await Events.setMode(picked);
+  },
+
+  /**
+   * Cambia de modo. Los dos modos cargan el Excel en formatos distintos,
+   * así que al cambiar se quita el Excel (y su concentrado) ya cargado, previa
+   * confirmación; el resto de fuentes (PDFs, WTMS, despacho, montos) no se toca.
+   * @returns {Promise<boolean>} true si el modo quedó aplicado
+   */
+  async setMode(mode) {
+    if (mode === State.mode) return true;
+    const hasExcel = !!(State.xlsData && State.xlsData.length) || State.factData.size > 0;
+    if (State.mode && hasExcel) {
+      const ok = await ConfirmDialog.confirm({
+        title: 'Cambiar de modo',
+        body: 'El Excel cargado está en el formato del modo anterior. Se quitará para que vuelvas a cargarlo; PDFs, WTMS, despacho y montos se conservan.',
+        confirmLabel: 'Cambiar y quitar Excel', danger: true
+      });
+      if (!ok) return false;
+    }
+    State.xlsData = null; State.xlsSource = null; State.xlsLabel = '';
+    State.factData = new Map();
+    saveMode(mode);
+    UI.applySourceMode(mode);
+    UI.setSourceStatus('xls', false, 'Arrastra o haz clic', UI.xlsCardText(mode).sub);
+    Events.triggerMerge();
+    return true;
   },
 
   // ── Reporte WTMS handler (4ª fuente obligatoria) ──
@@ -466,6 +560,37 @@ export const Events = {
       UI.showErrors([e.message]);
     } finally {
       UI.setSourceProcessing('wtms', false);
+    }
+  },
+
+  // —— Reporte de Facturación handler (5ª fuente OBLIGATORIA) ——
+  // El archivo real nunca trae una extensión confiable (se descarga tal
+  // cual de un correo, ver processors/invoice-report.js) — a diferencia
+  // de PDF/XLS/WTMS, aquí NO se filtra por nombre/extensión: se toma el
+  // primer archivo soltado y se detecta el formato por su CONTENIDO
+  // (processInvoiceReport() lanza si no reconoce el encabezado). Al ser
+  // obligatoria, Events.checkSources() bloquea TODO el merge (igual que
+  // PDF/XLS/WTMS/despacho) si no se ha cargado.
+  async handleInvoiceReport(files) {
+    const file = files[0];
+    if (!file) return;
+    State.reviewSessionId = null;
+    UI.showProgress('Leyendo Reporte de Facturación…');
+    UI.setSourceProcessing('montos', true);
+    try {
+      const raw = await file.text();
+      const { invoiceData, dc } = processInvoiceReport(raw);
+      State.invoiceData = invoiceData;
+
+      UI.setSourceStatus('montos', true, 'Completo', `${invoiceData.size} facturas · DC ${dc}`);
+
+      UI.hideProgress();
+      Events.triggerMerge();
+    } catch (e) {
+      UI.hideProgress();
+      UI.showErrors([e.message]);
+    } finally {
+      UI.setSourceProcessing('montos', false);
     }
   },
 
@@ -500,9 +625,10 @@ export const Events = {
   checkSources() {
     const missing = [];
     if (State.pdfData.size === 0) missing.push('PDFs de cargas');
-    if (!State.xlsData || !State.xlsData.length) missing.push('Excel macro (RUTEO NUEVO)');
+    if (!State.xlsData || !State.xlsData.length) missing.push(State.mode === MODE_SIN_MACRO ? 'Ruteo (ESTATUS RUTAS)' : 'Excel macro (RUTEO NUEVO)');
     if (State.despData.size === 0) missing.push("Status de despacho (RUTA + ID'S MASTER)");
     if (State.wtmsData.size === 0) missing.push('Reporte WTMS');
+    if (State.invoiceData.size === 0) missing.push('Reporte de Facturación (montos)');
     // NUEVO (ago-2026 — "reabrir para corregir"): una sesión reabierta
     // desde Historial (ver Events.reopenSession()) trae State.merged
     // ya resuelto por un merge anterior — no hay fuentes crudas que
@@ -514,6 +640,30 @@ export const Events = {
   },
 
   triggerMerge() {
+    // FIX (oct-2026 — asignación bloque→ruta de PDFs unificados): se
+    // reasigna con evidencia del Excel ANTES de comparar/cruzar, para que
+    // source-check y runMerge() vean las mismas rutas. Idempotente y sin
+    // efecto si falta Excel o no hay PDFs unificados — ver
+    // processors/unified-routes.js.
+    const xlsBase = State.xlsSource || State.xlsData;
+    const swapped = reconcileUnifiedRoutes(State.pdfData, xlsBase);
+    if (swapped) console.info(`[PDF] ${swapped} PDF(s) unificado(s): bloques reasignados a su ruta según el Excel.`);
+
+    // NUEVO (oct-2026 — paso DESCO/FRIALSA, antes manual): las rutas que
+    // descargan en un HUB se ajustan al PDF. Siempre se recalcula desde
+    // xlsSource (puro e idempotente — ver processors/desco.js), así que
+    // cambiar PDFs después nunca parte de un Excel ya colapsado. Tras
+    // restaurar Autosave no hay xlsSource: rige xlsData (ya ajustado).
+    const { rows: xlsRows, adjusted } = applyDesco(xlsBase, State.pdfData);
+    if (State.xlsSource) State.xlsData = xlsRows;
+    if (adjusted.length) {
+      console.info('[DESCO] Rutas ajustadas a su HUB según el PDF:', adjusted.map(a => `${a.ruta}→${a.hub.join('+')}`).join(', '));
+    }
+    if (State.xlsSource) {
+      const nota = adjusted.length ? ` · ${adjusted.length} ruta${adjusted.length !== 1 ? 's' : ''} a HUB ajustada${adjusted.length !== 1 ? 's' : ''}` : '';
+      UI.setSourceStatus('xls', true, '\u2713 Completo', `${State.xlsData.length} rutas${State.xlsLabel.replace(/^\d+ rutas/, '')}${nota}`);
+    }
+
     // NUEVO (ago-2026 — validación informativa Excel vs PDF, ver nota de
     // cabecera de este archivo y features/source-check.js). Deliberadamente
     // ANTES de checkSources()/el gate de las 4 fuentes: compareExcelPdf()
@@ -647,7 +797,12 @@ export const Events = {
     }
     UI.setExportBusy(false);
 
-    exportXLSX();
+    // CAMBIO (oct-2026): exportXLSX() ahora es async (ExcelJS solo
+    // entrega el buffer vía Promise, ver features/export.js) -- se
+    // espera a que termine de armar el archivo antes de la secuencia
+    // de éxito, para no lanzar el banner de celebración si algo truena
+    // a mitad del armado del Excel.
+    await exportXLSX();
     // Secuencia de éxito (sección 6): botón con checkmark + ráfaga de
     // partículas con los colores del tema activo, y RECIÉN después el
     // modal de celebración — se difiere 700ms (duración de la ráfaga)
@@ -692,9 +847,9 @@ export const Events = {
     UI.renderHistoryPreview(rows, session);
   },
 
-  redownloadHistorySession() {
+  async redownloadHistorySession() {
     if (!Events._currentHistoryRows || !Events._currentHistorySession) return;
-    exportXLSX(Events._currentHistoryRows, 'despacho', Events._currentHistorySession.session_date);
+    await exportXLSX(Events._currentHistoryRows, 'despacho', Events._currentHistorySession.session_date);
   },
 
   /**
@@ -802,7 +957,7 @@ export const Events = {
     const session = await DispatchHistory.getTodaySession();
     if (!session) return;
     const rows = await DispatchHistory.getSessionRows(session.id);
-    exportXLSX(rows, 'despacho', session.session_date);
+    await exportXLSX(rows, 'despacho', session.session_date);
   },
 
   async addCatalogEntry() {
@@ -884,6 +1039,55 @@ export const Events = {
       UI.setMaintenanceStatus('', '');
     } catch (e) {
       UI.setMaintenanceStatus('Error: ' + e.message, 'err');
+    }
+  },
+
+  /**
+   * Variantes de cita (Fase 1 — catálogo self-service, ver features/
+   * citas/cita-pattern-registry.js). Se recarga desde Supabase cada vez
+   * que se entra al Centro de Mantenimiento — mismo criterio que
+   * loadMaintenanceCenter() — por si otra sesión agregó una variante.
+   */
+  async loadCitaPatterns() {
+    UI.setCitaPatternStatus('Cargando…', 'ok');
+    try {
+      await CitaPatternStore.loadAll();
+      UI.renderCitaPatterns(State.citaPatterns);
+      UI.setCitaPatternStatus('', '');
+    } catch (e) {
+      UI.setCitaPatternStatus('Error: ' + e.message, 'err');
+    }
+  },
+
+  /**
+   * Agrega una variante de cita nueva desde el formulario de
+   * Administración → Centro de Mantenimiento. No reprocesa PDFs ya
+   * cargados — aplica a partir del siguiente lote que se suba.
+   * @param {object} values — ver CitaPatternStore.addPattern()
+   */
+  async addCitaPattern(values) {
+    UI.setCitaPatternStatus('Guardando…', 'ok');
+    try {
+      await CitaPatternStore.addPattern(values, State.user);
+      UI.renderCitaPatterns(State.citaPatterns);
+      UI.setCitaPatternStatus('Variante guardada — se aplicará en el próximo PDF que subas.', 'ok');
+    } catch (e) {
+      UI.setCitaPatternStatus(e.message, 'err');
+    }
+  },
+
+  /**
+   * Quita (desactiva) una variante de cita.
+   * @param {string} id
+   */
+  async deleteCitaPattern(id) {
+    UI.setCitaPatternStatus('Quitando…', 'ok');
+    try {
+      await CitaPatternStore.deletePattern(id);
+      UI.renderCitaPatterns(State.citaPatterns);
+      UI.setCitaPatternStatus('Variante quitada.', 'ok');
+    } catch (e) {
+      UI.setCitaPatternStatus(e.message, 'err');
     }
   },
 

@@ -4,9 +4,24 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SmartDispatch · CeDis VHSA</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- PWA: manifest + iconos + color de tema (Edge usa esto para la
+     ventana instalada, la entrada en Inicio/Taskbar y el splash). -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0B1D33">
+<link rel="icon" href="icons/favicon.ico" sizes="any">
+<link rel="icon" href="icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<!-- Librerías vendorizadas localmente (antes CDN). Vendorizarlas evita
+     3 round-trips a dominios externos en cada carga en frío y permite
+     que el service worker las sirva offline — ver sw.js. -->
+<script src="vendor/pdf.min.js"></script>
+<script src="vendor/xlsx.full.min.js"></script>
+<!-- ExcelJS: SOLO se usa para ESCRIBIR el Excel final (features/export.js).
+     xlsx.full.min.js (SheetJS, arriba) sigue siendo quien LEE todos los
+     Excel/CSV que el usuario sube -- no se toca nada de eso. Ver la nota
+     de cabecera de export.js para el porqué de dos librerías. -->
+<script src="vendor/exceljs.min.js"></script>
+<script src="vendor/supabase-js.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <!-- Dynamic Experience — Theme Engine (ver src/theme-engine/). Fase 1:
@@ -14,6 +29,7 @@
      host ambiental (vacio). -->
 <link rel="stylesheet" href="src/theme-engine/theme-engine.css">
 <link rel="stylesheet" href="src/theme-engine/motion.css">
+<link rel="stylesheet" href="src/core/pwa-install.css">
 <style>
 /* ═══════════════════════════════════════════════════════════════
    DESIGN TOKENS — rediseño Mesa de Trabajo/Preparación (mockup jul-2026)
@@ -44,9 +60,27 @@
   --amber-soft:#2A1E0A; --amber-ink:var(--amber-deep); --green-soft:#0C2620; --red-soft:#2B1315; --blue-soft:#0E1D33; --violet-soft:#1B1530;
   --paper:#080D18; --surface:#0E1626; --surface-2:#131C30; --surface-3:#182338;
   --border:rgba(255,255,255,.08); --border-2:rgba(255,255,255,.14);
-  --text:#EAF0FB; --text-2:#9FB0C9; --text-3:#657390; --text-4:#3E4B63;
+  --text:#EAF0FB; --text-2:#9FB0C9; --text-3:#8291AF; --text-4:#3E4B63;
   --shadow-sm:0 1px 3px rgba(0,0,0,.4); --shadow-md:0 6px 20px rgba(0,0,0,.45);
   --shadow-lg:0 24px 60px rgba(0,0,0,.55); --shadow-glow:0 0 0 4px rgba(245,166,35,.18);
+}
+
+/* ── Transición suave al alternar claro/oscuro (oct-2026) ──
+   Sin esto, las ~20 variables de color de arriba cambian todas de
+   golpe en el mismo frame -- se percibe como un parpadeo brusco en
+   vez de un cambio de tema. La transición SOLO se activa mientras
+   <html> tiene la clase .theme-transitioning (agregada por
+   UI.applyTheme() justo antes de tocar data-theme, retirada ~300ms
+   después) -- no queda pegada de forma permanente, así que no
+   interfiere con las transiciones propias de hover/focus del resto
+   de la app. Respeta prefers-reduced-motion: para quien pidió menos
+   movimiento, el cambio sigue siendo instantáneo (sin parpadeo raro,
+   pero tampoco una animación que no quiere ver). */
+@media (prefers-reduced-motion: no-preference) {
+  html.theme-transitioning, html.theme-transitioning *{
+    transition: background-color .25s ease, color .25s ease,
+                border-color .25s ease, box-shadow .25s ease !important;
+  }
 }
 
 /* ── PUENTE DE COMPATIBILIDAD ──
@@ -202,11 +236,17 @@ body:not(.app-authed) .shell{display:none!important}
 .up-card.done .up-ico{background:var(--green);color:#fff}
 .up-title{font-weight:700;font-size:12.5px;margin-bottom:3px}
 .up-sub{font-size:10.5px;color:var(--text-3);margin-bottom:10px}
+.up-origin{font-size:10px;color:var(--amber-ink,#92400e);background:rgba(245,166,35,.12);border-radius:6px;padding:3px 7px;margin:-4px 0 10px;display:inline-block;line-height:1.4}
 .up-status{
   display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:9.5px;font-weight:600;
   padding:3px 10px;border-radius:100px;background:var(--surface-3);color:var(--text-3);transition:color .2s;
 }
 .up-card.done .up-status{background:var(--green);color:#fff}
+.up-folder-pick{
+  position:relative;z-index:2;display:inline-block;margin-top:8px;
+  font-size:9.5px;font-weight:600;color:var(--text-3);text-decoration:underline;cursor:pointer;
+}
+.up-folder-pick:hover{color:var(--brand-accent)}
 
 /* ── Feedback de arrastre (drag & drop) — NUEVO jul-2026 ──
    Events.setupDrop() ya alternaba la clase .drag en dragover/dragleave/
@@ -342,14 +382,21 @@ body:not(.app-authed) .shell{display:none!important}
 
 /* ── TODAY BANNER ── */
 .today-banner{
-  display:flex;align-items:center;gap:14px;background:var(--green-soft);border:1px solid var(--green);
-  border-radius:var(--r-lg);padding:12px 18px;margin-bottom:16px;box-shadow:var(--shadow-sm);
+  display:flex;align-items:center;flex-wrap:wrap;gap:10px;background:var(--green-soft);border:1px solid var(--green);
+  border-radius:999px;padding:7px 16px;margin-bottom:14px;box-shadow:var(--shadow-sm);
+  animation: todayBannerIn var(--dur-slow, 320ms) var(--ease, ease) both;
 }
+@media (prefers-reduced-motion: reduce){ .today-banner{ animation:none; } }
 .today-banner.hidden{display:none}
-.today-banner-icon{font-size:22px;flex-shrink:0}
-.today-banner-text{flex:1;min-width:200px;font-size:12px;color:var(--text-2)}
-.today-banner-text strong{display:block;font-size:13px;color:var(--green);margin-bottom:2px}
-.today-banner-actions{display:flex;gap:8px;flex-shrink:0}
+.today-banner-icon{font-size:15px;flex-shrink:0;line-height:1}
+.today-banner-text{flex:1 1 auto;min-width:160px;font-size:11.5px;line-height:1.4;color:var(--text-2);display:flex;align-items:baseline;flex-wrap:wrap;gap:5px}
+.today-banner-text strong{font-size:12px;font-weight:700;color:var(--green)}
+.today-banner-actions{display:flex;gap:4px;flex-shrink:0;margin-left:auto}
+.today-banner-actions .btn{padding:4px 10px;font-size:11px}
+@keyframes todayBannerIn{
+  from{ opacity:0; transform:translateY(-6px); }
+  to  { opacity:1; transform:translateY(0); }
+}
 
 /* ══════════════════ MESA DE TRABAJO ══════════════════ */
 .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
@@ -416,6 +463,7 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
 /* ══════════════════ CALIDAD ══════════════════ */
 .q-hero{display:flex;align-items:center;gap:40px;padding:36px;background:linear-gradient(135deg,var(--navy),var(--navy-2));border-radius:var(--r-xl);color:#fff;margin-bottom:22px;flex-wrap:wrap;box-shadow:var(--shadow-lg)}
 .q-ring-wrap{position:relative;width:168px;height:168px;flex-shrink:0}
+.q-ring-badge{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:84px;opacity:.16;transition:opacity .3s var(--ease,ease)}
 .q-ring-num{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
 .q-ring-num strong{font-family:var(--disp);font-weight:800;font-size:34px;line-height:1}
 .q-ring-num span{font-size:10px;color:rgba(255,255,255,.55);font-weight:600;letter-spacing:.04em;margin-top:2px}
@@ -682,6 +730,16 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
 .mc-metric-val{font-family:var(--disp);font-weight:800;font-size:22px}
 .mc-metric-label{font-size:10.5px;color:var(--text-3);margin-top:2px}
 
+/* -- Variantes de Cita (Fase 1, oct-2026) -- */
+.cita-pattern-section{margin-top:24px;border-top:1px solid var(--border);padding-top:16px}
+.cita-pattern-form{display:flex;flex-direction:column;gap:10px;margin-bottom:10px}
+.cita-pattern-row{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end}
+.cita-pattern-row label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--text-3);font-weight:600}
+.cita-pattern-row select,.cita-pattern-row input[type=text]{font-size:12px;padding:7px 9px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text-1)}
+.cita-pattern-checkbox{flex-direction:row !important;align-items:center;gap:6px !important}
+.cita-pattern-submit-row{justify-content:space-between;align-items:center}
+.cita-pattern-submit-row code{font-family:var(--mono);background:var(--surface-2);padding:2px 6px;border-radius:5px}
+
 /* ══════════════════ EXPORTACIÓN ══════════════════ */
 .exp-stage{text-align:center;padding:20px 10px}
 .exp-icon{
@@ -727,9 +785,20 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
 .cstat span{font-size:10px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em}
 
 /* Modal (nombre + tema) */
+/* FIX (oct-2026 — modal de Configuración cortado en pantallas bajas):
+   .modal-box no tenía max-height/overflow, y .modal-overlay centra con
+   flex sin scroll propio -- en el modal de Configuración (usuario +
+   contraseñas + modo + 12 temas estacionales + intensidad + footer) el
+   contenido es más alto que muchas pantallas de laptop, así que la
+   parte de arriba y/o de abajo quedaba literalmente fuera del viewport
+   -- sin forma de hacer scroll para llegar a ella (ej. el botón
+   "Guardar cambios"). Se acota la altura del propio .modal-box (no la
+   del overlay) para que sea EL CONTENEDOR el que haga scroll interno --
+   evita un quirk conocido de flex (align-items:center + overflow-y en
+   el padre recorta el tope del hijo al hacer scroll). */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,10,30,.7);backdrop-filter:blur(6px);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;animation:overlayFade .18s ease}
 .modal-overlay.hidden{display:none}
-.modal-box{background:var(--surface);border-radius:var(--r-xl);padding:32px 36px;width:400px;max-width:100%;box-shadow:var(--shadow-lg);border:1px solid var(--border);animation:celebratePop var(--dur-slow) cubic-bezier(.2,.9,.3,1.2)}
+.modal-box{background:var(--surface);border-radius:var(--r-xl);padding:32px 36px;width:400px;max-width:100%;max-height:calc(100vh - 40px);overflow-y:auto;box-shadow:var(--shadow-lg);border:1px solid var(--border);animation:celebratePop var(--dur-slow) cubic-bezier(.2,.9,.3,1.2)}
 .modal-logo{display:flex;align-items:center;gap:9px;margin-bottom:22px}
 .modal-logo-mark{width:36px;height:36px;background:var(--amber);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:18px}
 .modal-logo-text{font-size:14px;font-weight:700;color:var(--text)}
@@ -741,6 +810,16 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
 .modal-input:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-bg)}
 .modal-input::placeholder{color:var(--text4)}
 .modal-hint{font-size:11px;color:var(--text3);margin-bottom:18px}
+/* Modal de modo de carga (macro / sin macro) — ui/mode-modal.js */
+.mode-modal-box{width:560px}
+.mode-options{display:grid;gap:12px;margin:6px 0 18px}
+.mode-opt{display:flex;flex-direction:column;gap:4px;text-align:left;background:var(--surface2);border:1.5px solid var(--border2);border-radius:var(--r);padding:14px 16px;cursor:pointer;font-family:var(--ui);color:var(--text);transition:border-color .15s,box-shadow .15s,background .15s}
+.mode-opt:hover,.mode-opt.is-current{border-color:var(--blue);background:var(--blue-bg)}
+.mode-opt:focus-visible{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-bg)}
+.mode-opt strong{font-size:14px;font-weight:800}
+.mode-opt span{font-size:12px;line-height:1.55;color:var(--text2)}
+.mode-opt .mode-tag{align-self:flex-start;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--amber-dk)}
+.mode-modal-actions{display:flex;justify-content:flex-end}
   .auth-error{font-size:11px;color:var(--red);min-height:14px;margin:4px 0 12px}
 .auth-error strong{display:block;font-size:11.5px;font-weight:700;color:var(--red);margin-bottom:2px}
 .auth-error span{display:block;font-size:11px;color:var(--text2);line-height:1.5;font-weight:400}
@@ -1023,18 +1102,19 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
           <div class="screen-title">Preparación del día operativo</div>
           <div class="screen-sub">Carga las 4 fuentes del día — SmartDispatch valida y cruza todo automáticamente.</div>
         </div>
+        <button class="btn btn-ghost btn-sm" id="btnChangeMode" title="Cambiar entre modo macro y modo sin macro">Modo sin macro · Cambiar</button>
       </div>
 
       <!-- Aviso: día operativo ya procesado -->
       <div class="today-banner hidden" id="todayBanner">
-        <div class="today-banner-icon">✅</div>
+        <div class="today-banner-icon">&#9989;</div>
         <div class="today-banner-text">
-          <strong>El día operativo de hoy ya fue procesado.</strong>
+          <strong>Día operativo ya procesado.</strong>
           <span id="todayBannerInfo"></span>
         </div>
         <div class="today-banner-actions">
-          <button class="btn btn-ghost btn-sm" id="btnTodayPreview">👁 Ver vista previa</button>
-          <button class="btn btn-amber btn-sm" id="btnTodayRedownload">⬇ Descargar de nuevo</button>
+          <button class="btn btn-ghost btn-sm" id="btnTodayPreview">&#128065; Vista previa</button>
+          <button class="btn btn-amber btn-sm" id="btnTodayRedownload">&#11015; Descargar de nuevo</button>
         </div>
       </div>
 
@@ -1049,25 +1129,40 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
 
       <div class="prep-grid" id="prepGrid">
         <div class="up-card" id="dropPDF">
-          <input type="file" id="filePDF" multiple accept=".pdf" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%">
-          <div class="up-ico">📄</div>
+          <input type="file" id="filePDF" multiple accept=".pdf" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;z-index:1">
+          <div class="up-ico">&#128196;</div>
           <div class="up-title">PDFs de cargas</div>
           <div class="up-sub" id="pdfSub">Todos los archivos del día a la vez</div>
           <div class="up-status" id="pdfStatus">Arrastra o haz clic</div>
+          <label class="up-folder-pick" for="filePDFFolder">o selecciona la carpeta completa</label>
+          <input type="file" id="filePDFFolder" webkitdirectory multiple style="display:none">
         </div>
         <div class="up-card" id="dropXLS">
           <input type="file" id="fileXLS" accept=".xlsx,.xls" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%">
           <div class="up-ico">📊</div>
-          <div class="up-title">Excel macro</div>
-          <div class="up-sub" id="xlsSub">RUTEO NUEVO · CONCENTRADO FACTURAS</div>
+          <div class="up-title" id="xlsTitle">Ruteo</div>
+          <div class="up-sub" id="xlsSub">Hoja RUTEO NUEVO del ESTATUS RUTAS</div>
           <div class="up-status" id="xlsStatus">Arrastra o haz clic</div>
         </div>
         <div class="up-card" id="dropWTMS">
           <input type="file" id="fileWTMS" accept=".csv" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%">
-          <div class="up-ico">🛰️</div>
+          <div class="up-ico">&#128752;</div>
           <div class="up-title">Reporte WTMS</div>
           <div class="up-sub" id="wtmsSub">Archivo .csv</div>
           <div class="up-status" id="wtmsStatus">Arrastra o haz clic</div>
+        </div>
+        <div class="up-card" id="dropMONTOS">
+          <input type="file" id="fileMONTOS" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%">
+          <div class="up-ico">&#128178;</div>
+          <div class="up-title">Reporte de Facturación</div>
+          <div class="up-sub" id="montosSub">Reporte de mainframe (monto por factura)</div>
+          <!-- NUEVO (oct-2026): aclara de dónde sale este archivo en
+               concreto -- a diferencia de las otras 4 fuentes (que el
+               usuario arma/exporta él mismo), este lo manda QA al
+               cierre del día por correo; ver docs/FUENTES_DE_DATOS.md
+               para el resumen completo de las 5 fuentes. -->
+          <div class="up-origin" title="Lo envía QA por correo al cierre del día operativo.">&#128194; Carpeta EMAIL_PROD · lo manda QA al cierre del día</div>
+          <div class="up-status" id="montosStatus">Arrastra o haz clic</div>
         </div>
 
         <div class="up-card up-card-paste" id="dropDESP">
@@ -1166,7 +1261,7 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
           <table class="dtbl">
             <thead><tr>
               <th class="key">Ruta</th><th>Operador</th><th>Lic.</th><th>Tarimas</th><th>Marchamo</th>
-              <th>Factura</th><th>Tienda</th><th>Tractor</th><th>Remolque</th><th>Estado</th><th></th>
+              <th>Factura</th><th>Monto</th><th>Tienda</th><th>Tractor</th><th>Remolque</th><th>Estado</th><th></th>
             </tr></thead>
             <tbody id="mainTbody"></tbody>
           </table>
@@ -1247,15 +1342,7 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
 
       <div class="q-hero">
         <div class="q-ring-wrap">
-          <svg width="168" height="168" viewBox="0 0 168 168">
-            <circle cx="84" cy="84" r="72" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="14"/>
-            <circle cx="84" cy="84" r="72" fill="none" stroke="url(#qgrad)" stroke-width="14"
-              stroke-dasharray="452.4" stroke-dashoffset="452.4" stroke-linecap="round" transform="rotate(-90 84 84)"
-              id="qArc" style="transition:stroke-dashoffset 1.1s var(--ease)"/>
-            <defs><linearGradient id="qgrad" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stop-color="#F5A623"/><stop offset="100%" stop-color="#1E9E6B"/>
-            </linearGradient></defs>
-          </svg>
+          <div class="q-ring-badge" id="qRingBadge">&#128202;</div>
           <div class="q-ring-num"><strong id="qRingNum">—</strong><span>CALIDAD FINAL</span></div>
         </div>
         <div class="q-hero-info">
@@ -1454,11 +1541,86 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
             <div class="cat-status" id="mcMaintStatus"></div>
 
             <div style="margin-top:16px">
-              <button class="btn btn-ghost btn-sm" id="btnMcToggleResolved">🗂️ Ver incidencias resueltas</button>
+              <button class="btn btn-ghost btn-sm" id="btnMcToggleResolved">Ver incidencias resueltas</button>
               <div class="cat-table-wrap" id="mcResolvedWrap" style="display:none;margin-top:10px">
                 <table class="cat-table">
                   <thead><tr><th>Origen</th><th>Detalle</th><th>Ocurrencias totales</th><th>Resuelto</th><th>Por</th></tr></thead>
                   <tbody id="mcResolvedTbody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Variantes de Cita (Fase 1, oct-2026) — catalogo
+                 self-service de formatos de cita no estandar. Ver
+                 features/citas/ + ui/cita-pattern-ui.js. El formulario
+                 solo usa selects/checkboxes (nunca una regex escrita a
+                 mano) — sampleCitaText() genera la vista previa en vivo
+                 en #citaPatternPreview (ver app.js). -->
+            <div class="cita-pattern-section">
+              <div class="admin-hd">
+                <h3>Variantes de Cita</h3>
+                <p>¿La app no reconocio una cita por venir en un formato distinto (ej. "CITA:04/10/2026" pegado, sin espacio)? Agrega el formato aqui — sin tocar codigo, aplica desde el siguiente PDF que subas. El formato estandar (DD/MM/AAAA o DD-MM-AAAA, hora opcional) siempre se prueba primero y no se puede quitar.</p>
+              </div>
+
+              <form id="citaPatternForm" class="cita-pattern-form">
+                <div class="cita-pattern-row">
+                  <label>Orden de fecha
+                    <select name="date_order">
+                      <option value="DMY">Dia / Mes / Ano</option>
+                      <option value="MDY">Mes / Dia / Ano</option>
+                      <option value="YMD">Ano / Mes / Dia</option>
+                    </select>
+                  </label>
+                  <label>Separador
+                    <select name="date_sep">
+                      <option value="/">/ (04/10/2026)</option>
+                      <option value="-">- (04-10-2026)</option>
+                      <option value=".">. (04.10.2026)</option>
+                    </select>
+                  </label>
+                  <label>Digitos de ano
+                    <select name="year_digits">
+                      <option value="4">4 (2026)</option>
+                      <option value="2">2 (26)</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="cita-pattern-row">
+                  <label class="cita-pattern-checkbox">
+                    <input type="checkbox" name="allow_single_digit">
+                    Dia/mes sin cero a la izquierda (ej. "4" en vez de "04")
+                  </label>
+                  <label class="cita-pattern-checkbox">
+                    <input type="checkbox" name="has_time" id="citaPatternHasTime">
+                    Incluye hora
+                  </label>
+                  <label id="citaPatternTimeSepWrap" style="display:none">Separador de hora
+                    <select name="time_sep">
+                      <option value=":">: (10:30)</option>
+                      <option value=".">. (10.30)</option>
+                      <option value="h">h (10h30)</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="cita-pattern-row">
+                  <label style="flex:1">Texto de ejemplo que encontraste (opcional, solo referencia)
+                    <input type="text" name="example_text" maxlength="120" placeholder='ej. CITA:04/10/2026'>
+                  </label>
+                  <label style="flex:1">Etiqueta (opcional)
+                    <input type="text" name="label" maxlength="60" placeholder="ej. Variante del CeDis Toluca">
+                  </label>
+                </div>
+                <div class="cita-pattern-row cita-pattern-submit-row">
+                  <span>Vista previa: <code id="citaPatternPreview">04/10/2026</code></span>
+                  <button type="submit" class="btn btn-primary btn-sm">Agregar variante</button>
+                </div>
+              </form>
+              <div class="cat-status" id="citaPatternStatus"></div>
+
+              <div class="cat-table-wrap" style="margin-top:12px">
+                <table class="cat-table">
+                  <thead><tr><th>Variante</th><th>Ejemplo generado</th><th>Texto real que la origino</th><th></th></tr></thead>
+                  <tbody id="citaPatternTbody"></tbody>
                 </table>
               </div>
             </div>
@@ -1529,6 +1691,28 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
       <button class="btn btn-ghost" id="wmReview">🔍 Revisar advertencias</button>
       <button class="btn btn-amber" id="wmExport">⬇ Exportar de todos modos</button>
     </div>
+  </div>
+</div>
+
+<!-- ── MODAL DE MODO DE CARGA (macro / sin macro) — ver ui/mode-modal.js. Reutiliza
+     .modal-overlay/.modal-box; el único CSS nuevo es .mode-* (arriba). -->
+<div class="modal-overlay hidden" id="modeModalOverlay" role="dialog" aria-modal="true" aria-labelledby="modeModalTitle">
+  <div class="modal-box mode-modal-box">
+    <div class="modal-title" id="modeModalTitle">¿Cómo vas a trabajar?</div>
+    <div class="modal-sub">Elige el modo de carga del Excel de rutas.</div>
+    <div class="mode-options">
+      <button type="button" class="mode-opt" data-mode="macro" aria-pressed="false">
+        <strong>Modo macro</strong>
+        <span>Subes el Excel que ya pasó por la macro (RUTEO NUEVO + CONCENTRADO FACTURAS). Todo funciona como siempre.</span>
+      </button>
+      <button type="button" class="mode-opt" data-mode="sinmacro" aria-pressed="false">
+        <span class="mode-tag">Será el único a futuro</span>
+        <strong>Modo sin macro</strong>
+        <span>Subes solo el <b>Ruteo</b> (ESTATUS RUTAS tal cual) y la app hace el trabajo de las macros. La hora de facturación queda en blanco.</span>
+      </button>
+    </div>
+    <div class="modal-hint" id="modeModalHint">Puedes cambiarlo después desde Preparación.</div>
+    <div class="mode-modal-actions"><button type="button" class="btn btn-ghost" id="modeModalCancel">Cancelar</button></div>
   </div>
 </div>
 
@@ -1613,15 +1797,22 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
 
 <script type="module">
 import { init } from './src/core/app.js';
+import { initPwaInstall } from './src/core/pwa-install.js';
 
 // pdfjsLib worker — debe configurarse antes de que cualquier módulo
 // llame a pdfjsLib.getDocument(). El import de app.js resuelve todos
 // los módulos antes de ejecutar este código, así que la configuración
-// llega a tiempo.
-pdfjsLib.GlobalWorkerOptions.workerSrc =
-  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+// llega a tiempo. Worker vendorizado localmente (ver vendor/), ya no
+// depende de cdnjs.
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js';
 
-init();
+// Si el gate de instalacion bloquea (no corre como app instalada),
+// NO arrancamos init(): nada de login, nada de llamadas a Supabase,
+// solo la pantalla de "instala la app".
+const blockedByInstallGate = initPwaInstall();
+if (!blockedByInstallGate) {
+  init();
+}
 </script>
 </body>
 </html>

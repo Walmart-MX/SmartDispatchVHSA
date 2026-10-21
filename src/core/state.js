@@ -61,17 +61,40 @@ export const State = {
   catalogIndices: new Map(),
   catalogDuplicates: [],
 
+  // ── Variantes de cita (features/citas/ — Fase 1, oct-2026) ──
+  // Array de filas activas de cita_patterns (ver cita-pattern-store.js) —
+  // pasado tal cual a pdf.js→pdfExtract() como fallback de reconocimiento
+  // de citas, después del regex estándar.
+  citaPatterns: [],
+
   // ── Fuentes crudas del día operativo (4 obligatorias) ──
   // pdfData: Map<'ruta|factura' | 'ruta|D|destino', rawRow> — ver pdf.js/events.js.
   pdfData: new Map(),
   // xlsData: Array<rawRow> de la hoja RUTEO NUEVO, o null si no se ha cargado.
   xlsData: null,
-  // factData: Map<invoice, {gls, horaFact}> — hoja CONCENTRADO FACTURAS del Excel recién leído.
+  // mode: 'macro' | 'sinmacro' | null (aún no elige) — ver features/source-mode.js.
+  mode: null,
+  // xlsSource: filas de RUTEO NUEVO tal como salieron del archivo, ANTES del paso
+  // DESCO/FRIALSA (processors/desco.js). triggerMerge() recalcula xlsData desde aquí
+  // cada vez, así que cambiar los PDFs nunca parte de un Excel ya colapsado. null si
+  // no se leyó Excel en esta sesión (p. ej. tras restaurar Autosave: ahí rige xlsData).
+  xlsSource: null,
+  // xlsLabel: texto de la tarjeta Excel (se le añade la nota de HUB ajustados).
+  xlsLabel: '',
+  // factData: Map<invoice, {gls, horaFact}> — facturas del día: hoja CONCENTRADO FACTURAS
+  // (Excel ya procesado por la macro). Vacío en modo sin macro (no hay concentrado).
   factData: new Map(),
   // despData: Map<ruta, {hrDesp, caseta, wtms, idIda}> — panel "Status de despacho" (paste.js).
   despData: new Map(),
   // wtmsData: Map<idCarga, {carteporte, siguienteCarga}> — Reporte WTMS (processors/wtms.js). No se persiste.
   wtmsData: new Map(),
+  // invoiceData: Map<factKey, {monto, store, load}> — 5ª fuente OBLIGATORIA: Reporte de
+  // Facturación mainframe (processors/invoice-report.js). factKey = DC + folio de 6
+  // dígitos, misma convención que FAC_PDF/CONCENTRADO FACTURAS (ver merge.js).
+  // Events.checkSources() la exige igual que PDF/XLS/WTMS/despacho — y, como wtmsData,
+  // no se persiste entre días: se recarga en cada procesamiento y se reinicia en
+  // UI.resetAll().
+  invoiceData: new Map(),
 
   // ── Exclusiones confirmadas ("se quedó por ocupación", ver events.js → confirmExcludedDette()) ──
   // Set<'ruta||dette'> — persiste durante la sesión del navegador (no en Supabase);

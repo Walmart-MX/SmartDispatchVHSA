@@ -1,8 +1,10 @@
 /**
  * processors/merge.js
- * MERGE ENGINE — cruza los datos de las cuatro fuentes (Excel/RUTEO,
- * PDFs, concentrado de facturas, panel de despacho) y produce
- * State.merged: el array que alimenta la tabla, el SVE y la exportación.
+ * MERGE ENGINE — cruza los datos de las CINCO fuentes OBLIGATORIAS
+ * (Excel/RUTEO, PDFs, concentrado de facturas, panel de despacho, Reporte
+ * de Facturación mainframe — monto por factura, ver
+ * processors/invoice-report.js) y produce State.merged: el array que
+ * alimenta la tabla, el SVE y la exportación.
  *
  * A diferencia de pdf.js / excel.js / paste.js, esta función NO es pura:
  * lee State.xlsData, State.pdfData, State.factData, State.despData,
@@ -165,7 +167,7 @@
  *   - INCIDENT_TYPES (features/incidents/incident-types.js)
  */
 import { State } from '../core/state.js';
-import { COL_RUTA, COL_DETTE_E, COL_DETTE_F, COL_FACT, MAX_MARCH } from '../core/constants.js';
+import { COL_RUTA, COL_DETTE_E, COL_DETTE_F, COL_FACT, MAX_MARCH, MODE_SIN_MACRO } from '../core/constants.js';
 import { FactCache } from '../features/fact-cache.js';
 import { normOp } from '../utils/format.js';
 import { buildIndices, enrichRow } from '../features/catalogs/enrichment-engine.js';
@@ -335,6 +337,24 @@ export function runMerge() {
     } else {
       nr['_GLS'] = ''; nr['_HORA_FACT'] = ''; nr['_factSource'] = ''; nr['_factCacheDate'] = '';
     }
+
+    // —— 5ª fuente (OBLIGATORIA): Reporte de Facturación mainframe ——
+    // Ver processors/invoice-report.js. Mismo factKey que factData (arriba),
+    // pero mapa independiente. Events.checkSources() ya garantizó que
+    // State.invoiceData no esté vacío antes de que runMerge() se ejecute
+    // (ver events.js — triggerMerge() corta en seco si falta); aun así,
+    // una factura PUNTUAL puede no aparecer en el reporte (ej. typo de
+    // folio) — en ese caso el monto de ESA fila queda vacío sin bloquear
+    // el resto del merge, mismo criterio que GLS/Hora Facturación arriba.
+    const invoiceRow = factKey ? (State.invoiceData.get(factKey) || null) : null;
+    nr['_MONTO_FACTURA'] = invoiceRow ? invoiceRow.monto : '';
+
+    // MODO SIN MACRO (oct-2026): no hay concentrado, así que el GLS sale del
+    // `load` del Reporte de Facturación — verificado: coincide al 100% con el
+    // LOAD # del concentrado (253/253 facturas). HORA DE FACTURACION queda en
+    // blanco por decisión del equipo (dato redundante, ya pedida su baja). En
+    // modo macro este bloque no corre: todo sigue saliendo del concentrado.
+    if (State.mode === MODE_SIN_MACRO && invoiceRow?.load) nr['_GLS'] = invoiceRow.load;
 
     if (despRow) { nr['_HR_DESP'] = despRow.hrDesp; nr['_CASETA'] = despRow.caseta; nr['_WTMS'] = despRow.wtms; nr['_ID_IDA'] = despRow.idIda; }
     else         { nr['_HR_DESP'] = ''; nr['_CASETA'] = ''; nr['_WTMS'] = ''; nr['_ID_IDA'] = ''; }
