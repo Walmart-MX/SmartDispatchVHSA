@@ -190,10 +190,15 @@ import { FactCache } from '../features/fact-cache.js';
 import { initCatalog } from '../features/catalog.js';
 import { DispatchHistory } from '../features/dispatch-history.js';
 import { CatalogStore } from '../features/catalogs/catalog-store.js';
+import { CitaPatternStore } from '../features/citas/cita-pattern-store.js';
+import { sampleCitaText } from '../features/citas/cita-pattern-registry.js';
 import { Autosave } from '../features/autosave.js';
 import { ConfirmDialog } from '../ui/confirm-dialog.js';
+import { loadMode } from '../features/source-mode.js';
+import { MODE_SIN_MACRO } from './constants.js';
 import { ThemeEngine } from '../theme-engine/theme-engine.js';
 import { Motion } from '../theme-engine/motion.js';
+import { warnIfFiscalYearRunningOut } from './fiscal-calendar.js';
 
 // ── Stepper — navegación entre pantallas ──
 // CAMBIO (jul-2026 — simplificación del flujo, Etapa 4): STEPS baja de
@@ -465,6 +470,7 @@ function wireAuthForms() {
  * exitoso o sesión restaurada (login bloqueante, ver propuesta §17).
  */
 export async function init() {
+  warnIfFiscalYearRunningOut(); // pendiente recurrente — ver core/fiscal-calendar.js
   ConfirmDialog._wire();
   _setRoutePicker(RoutePicker);
   _setEvents(Events);
@@ -523,15 +529,31 @@ async function continueInit() {
 
   State.factCache    = await FactCache.load();
   State.factCacheLog = await FactCache.loadLog();
-  const fcStats = FactCache.stats();
-  if (fcStats.total > 0) {
-    console.log('[FactCache] Loaded', fcStats.total, 'invoices from', fcStats.days, 'day(s):', fcStats.dates.join(', '));
-  }
   UI.renderCacheHistory();
 
   Events.setupDrop('dropPDF', 'filePDF', Events.handlePDFs.bind(Events));
+  // NUEVO (oct-2026 — seleccion de carpeta completa): input aparte
+  // (webkitdirectory), activado por el link "o selecciona la carpeta
+  // completa" dentro de la misma tarjeta — no usa Events.setupDrop()
+  // porque no es una zona de drag&drop, solo un input oculto disparado
+  // por su <label>. El filtro ida/retorno corre DENTRO de
+  // Events.handlePDFs() (ver processors/pdf-trip-type.js), así que
+  // comparte el mismo camino sin importar como se eligieron los archivos.
+  const filePDFFolder = document.getElementById('filePDFFolder');
+  filePDFFolder.addEventListener('change', () => {
+    Events.handlePDFs([...filePDFFolder.files]);
+    filePDFFolder.value = '';
+  });
   Events.setupDrop('dropXLS', 'fileXLS', Events.handleXLS.bind(Events));
   Events.setupDrop('dropWTMS', 'fileWTMS', Events.handleWTMS.bind(Events));
+  Events.setupDrop('dropMONTOS', 'fileMONTOS', Events.handleInvoiceReport.bind(Events));
+
+  // MODO MACRO / SIN MACRO (oct-2026 — ver features/source-mode.js): se lee la
+  // elección guardada en este equipo y se refleja en la tarjeta Excel y en el
+  // botón de Preparación. Si aún no hay elección, el modal se abre al FINAL de
+  // continueInit() (la UI ya está lista). Mientras tanto la UI muestra sin macro.
+  UI.applySourceMode(loadMode() ?? MODE_SIN_MACRO);
+  document.getElementById('btnChangeMode').addEventListener('click', () => Events.chooseMode({ dismissible: true }));
 
   document.getElementById('btnGoTable').addEventListener('click', () => goStep('fix'));
 
@@ -749,7 +771,7 @@ async function continueInit() {
 
     document.querySelectorAll('.admin-nav-item').forEach(b => b.classList.toggle('active', b === btn));
     document.querySelectorAll('.admin-panel').forEach(p => p.classList.toggle('active', p.dataset.adminPanel === btn.dataset.admin));
-    if (btn.dataset.admin === 'maint') Events.loadMaintenanceCenter();
+    if (btn.dataset.admin === 'maint') { Events.loadMaintenanceCenter(); Events.loadCitaPatterns(); }
     if (btn.dataset.admin === 'users') refreshUsersAdmin();
   });
   document.getElementById('mcVentanaFile').addEventListener('change', function() {
@@ -784,6 +806,7 @@ async function continueInit() {
     if (!username || !password || !displayName || !captureName) {
       UI.setUsersStatus('Completa todos los campos.', 'err'); return;
     }
+    if (!(await ensureAdminSession())) return;
     UI.setUsersStatus('Creando…', 'ok');
     const result = await Auth.adminCreateUser(username, password, displayName, captureName);
     if (!result.ok) {
@@ -797,6 +820,7 @@ async function continueInit() {
   document.getElementById('usersTbody').addEventListener('click', async e => {
     const toggleBtn = e.target.closest('[data-user-toggle]');
     if (toggleBtn) {
+      if (!(await ensureAdminSession())) return;
       const active = toggleBtn.dataset.userToggle === 'activate';
       await Auth.adminSetActive(toggleBtn.dataset.userId, active);
       await refreshUsersAdmin();
@@ -804,13 +828,14 @@ async function continueInit() {
     }
     const resetBtn = e.target.closest('[data-user-reset]');
     if (resetBtn) {
+      if (!(await ensureAdminSession())) return;
       const newPass = await ConfirmDialog.prompt({
         title: 'Restablecer contraseña', body: 'Nueva contraseña temporal para este usuario:',
         placeholder: 'Nueva contraseña', confirmLabel: 'Guardar'
       });
       if (!newPass) return;
       await Auth.adminResetPassword(resetBtn.dataset.userId, newPass);
-      UI.setUsersStatus('✓ Contraseña restablecida', 'ok');
+      UI.setUsersStatus('Contraseña restablecida', 'ok');
     }
   });
 
@@ -865,6 +890,63 @@ async function continueInit() {
     Events.saveAllMaintenanceFixes(entries);
   });
   document.getElementById('btnMcToggleResolved').addEventListener('click', () => Events.toggleResolvedIncidents());
+
+  // ── Variantes de Cita (Fase 1, oct-2026) ──
+  // Vista previa en vivo — se recalcula con cualquier cambio del
+  // formulario, usando sampleCitaText() (features/citas/cita-pattern-
+  // registry.js) para que el operador vea el formato resultante SIN
+  // leer ni escribir una regex.
+  const citaForm    = document.getElementById('citaPatternForm');
+  const citaPreview = document.getElementById('citaPatternPreview');
+  const citaHasTime = document.getElementById('citaPatternHasTime');
+  const citaTimeWrap = document.getElementById('citaPatternTimeSepWrap');
+
+  const updateCitaPreview = () => {
+    if (!citaForm || !citaPreview) return;
+    const fd = new FormData(citaForm);
+    citaPreview.textContent = sampleCitaText({
+      date_order: fd.get('date_order'),
+      date_sep: fd.get('date_sep'),
+      year_digits: fd.get('year_digits'),
+      allow_single_digit: fd.get('allow_single_digit') === 'on',
+      has_time: fd.get('has_time') === 'on',
+      time_sep: fd.get('time_sep'),
+    });
+  };
+  if (citaForm) {
+    citaForm.addEventListener('input', updateCitaPreview);
+    citaForm.addEventListener('change', updateCitaPreview);
+    updateCitaPreview();
+  }
+  if (citaHasTime && citaTimeWrap) {
+    citaHasTime.addEventListener('change', () => {
+      citaTimeWrap.style.display = citaHasTime.checked ? '' : 'none';
+    });
+  }
+  if (citaForm) {
+    citaForm.addEventListener('submit', e => {
+      e.preventDefault();
+      const fd = new FormData(citaForm);
+      Events.addCitaPattern({
+        label: fd.get('label'),
+        date_order: fd.get('date_order'),
+        date_sep: fd.get('date_sep'),
+        year_digits: fd.get('year_digits'),
+        allow_single_digit: fd.get('allow_single_digit') === 'on',
+        has_time: fd.get('has_time') === 'on',
+        time_sep: fd.get('time_sep'),
+        example_text: fd.get('example_text'),
+      });
+      citaForm.reset();
+      if (citaTimeWrap) citaTimeWrap.style.display = 'none';
+      updateCitaPreview();
+    });
+  }
+  document.getElementById('citaPatternTbody')?.addEventListener('click', e => {
+    const btn = e.target.closest('[data-cita-pattern-delete]');
+    if (!btn) return;
+    Events.deleteCitaPattern(btn.dataset.citaPatternDelete);
+  });
 
   document.getElementById('btnHistoryOpenAdmin')?.addEventListener('click', () => Events.openHistory());
   document.getElementById('btnOpenSettingsAdmin')?.addEventListener('click', () => UI.openModal());
@@ -932,7 +1014,7 @@ async function continueInit() {
   UI.setActionsEnabled(false);
   UI.resetFixPeak();
   UI.resetQualityBaseline();
-  UI.updatePrepView(['PDFs de cargas','Excel macro (RUTEO NUEVO)',"Status de despacho (RUTA + ID'S MASTER)",'Reporte WTMS']);
+  UI.updatePrepView(['PDFs de cargas','Excel de rutas',"Status de despacho (RUTA + ID'S MASTER)",'Reporte WTMS']);
   UI.renderTable();
   UI.renderFixList();
   UI.renderQualityScreen();
@@ -946,6 +1028,7 @@ async function continueInit() {
   UI.setCatStatus(catResult.msg, catResult.ok ? 'ok' : 'err');
 
   await CatalogStore.loadAll();
+  await CitaPatternStore.loadAll();
   UI.renderCatalogMasterStatus('ventanaRecibo');
   UI.renderCatalogMasterStatus('poolReal');
   UI.renderCatalogAdmin('ventanaRecibo');
@@ -955,6 +1038,11 @@ async function continueInit() {
   State.todaySession = todaySession;
   UI.renderTodayBanner(todaySession);
   UI.applyMode();
+
+  // Primer arranque en este equipo: no se puede trabajar sin elegir modo, así
+  // que el modal NO es descartable. Va antes de la recuperación de Autosave
+  // para que, si el snapshot trae un Excel de otro modo, setMode() lo pregunte.
+  if (!State.mode) await Events.chooseMode({ dismissible: false });
 
   // NUEVO — recuperación de Autosave (ver features/autosave.js). Va al
   // final de continueInit(), con todo ya pintado/cableado, para que
@@ -980,7 +1068,35 @@ async function continueInit() {
   // se resuelve por completo en el flujo de auth, antes de llegar aquí.
 }
 
+/**
+ * Guard de "step-up auth" para el panel de Usuarios: si ya hay un
+ * token de admin vigente en esta pestaña (Auth.hasAdminSession()) no
+ * hace nada; si no, pide la propia contraseña del usuario logueado y
+ * la cambia por un token via Auth.adminLogin(). Ver docs/fix_admin_session_tokens.sql
+ * y la nota de cabecera de features/auth.js para el porque de este paso.
+ * @returns {Promise<boolean>} true si queda una sesion de admin vigente.
+ */
+async function ensureAdminSession() {
+  if (Auth.hasAdminSession()) return true;
+  const password = await ConfirmDialog.prompt({
+    title: 'Confirma tu contraseña',
+    body: 'Para administrar usuarios necesitamos reconfirmar tu identidad.',
+    placeholder: 'Tu contraseña', confirmLabel: 'Continuar', inputType: 'password'
+  });
+  if (!password) return false;
+  const result = await Auth.adminLogin(password);
+  if (!result.ok) {
+    UI.setUsersStatus(
+      result.error === 'not_admin' ? 'Tu usuario no tiene permisos de administrador.' : 'Contraseña incorrecta.',
+      'err'
+    );
+    return false;
+  }
+  return true;
+}
+
 async function refreshUsersAdmin() {
+  if (!(await ensureAdminSession())) { UI.renderUsersAdmin([]); return; }
   const users = await Auth.adminListUsers();
   UI.renderUsersAdmin(users);
 }

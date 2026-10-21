@@ -429,6 +429,34 @@
  *   exactamente igual, sin que les importe si un valor vino de la
  *   tabla impresa o de una anotación.
  *
+ * FIX (oct-2026) — ruta unificada con entregas a TIENDA: nuevo criterio de
+ *   partición por remolque cuando el marchamo no alcanza.
+ *   _splitUnifiedBlocksByMarchamo() asume marchamo solo en la 1ª fila de
+ *   cada remolque (cierto en cargas HUB). En cargas con tiendas, WTMS
+ *   imprime un marchamo por TIENDA (todas las filas lo traen) → N bloques
+ *   en vez de 2 → respaldo "corte por mitad", correcto solo con reparto
+ *   parejo entre remolques. Con reparto desigual (1+2, 1+3…) una tienda
+ *   cambiaba de ruta — o dos tiendas iguales de remolques distintos se
+ *   fusionaban y una entrega desaparecía — y no cruzaba con el Excel
+ *   (clave ruta|D|destino).
+ *   Ahora ROW_RE captura la "Placa Trailer" y, SOLO si el marchamo no dio
+ *   exactamente 2 bloques, _splitUnifiedBlocksByTrailer() corta cuando la
+ *   placa cambia. Cascada: marchamo → placa → mitad (respaldo anterior).
+ *   La placa NO va primero a propósito: en cargas HUB WTMS repite la misma
+ *   placa en casi todas las filas (ej. 5202-5203: 21UV9W ×25 y 32UV9W
+ *   ×1), así que usarla primero rompió 5 PDFs HUB en la regresión.
+ *   Regresión antes/después: 304 PDFs unificados históricos → 297
+ *   idénticos, 7 corregidos (todos tiendas con reparto desigual);
+ *   466 PDFs de SW 38 → 0 cambios.
+ *
+ * FIX (oct-2026) — qué bloque es qué ruta NO se puede saber desde el PDF:
+ *   la regla "el primer bloque impreso es la ruta de número MAYOR" (caso
+ *   1205-1206) es falsa en 4107-4108, donde el Excel asigna 3505/3632 a
+ *   4107 (la MENOR) y 1124/1004 a 4108 — las 4 tiendas quedaban sin
+ *   cruzar. El PDF no trae ninguna señal que ligue remolque→ruta, así que
+ *   parsePDF() solo etiqueta cada fila con `bloque` y `rutasPar`, y
+ *   processors/unified-routes.js decide la asignación con el Excel.
+ *
  * Dependencia externa: pdfjsLib (cargado globalmente desde el CDN en
  * index.html, con su workerSrc ya configurado ahí). Este módulo no
  * configura el worker — eso es responsabilidad del bootstrap en index.html.
@@ -440,8 +468,10 @@
  * debe depender de ningún otro módulo propio.
  */
 
-/** Máximo de marchamos por entrega — debe coincidir con MAX_MARCH (core/constants.js). */
-const MAX_MARCH_SLOTS = 5;
+/** Máximo de marchamos por entrega — debe coincidir con MAX_MARCH (core/constants.js).
+ *  Exportado (oct-2026) para que processors/pdf-stride.js reutilice el mismo límite —
+ *  ver nota de cabecera de ese archivo. Ningún llamador interno de pdf.js cambia. */
+export const MAX_MARCH_SLOTS = 5;
 
 /** Formato válido de marchamo: 5-6 dígitos, con o sin cero inicial. */
 const MARC_RE = /^0?\d{5,6}$/;
@@ -453,8 +483,11 @@ const MARC_RE = /^0?\d{5,6}$/;
  *  real del contenido se decide aparte con _isValidMarchamo(). */
 const MARC_CANDIDATE_RE = /^\d{3,10}$/;
 
-/** Valida el formato final de un marchamo ya extraído. @private */
-function _isValidMarchamo(s) {
+/** Valida el formato final de un marchamo ya extraído.
+ *  Exportado (oct-2026) para reutilizarse en processors/pdf-stride.js —
+ *  el formato de marchamo (5-6 dígitos) es idéntico en ambas plataformas,
+ *  confirmado con muestra real de Stride. @private */
+export function _isValidMarchamo(s) {
   return MARC_RE.test(String(s || '').trim());
 }
 
@@ -592,7 +625,54 @@ function _nearestDestino(item, destPositions) {
  *   marchamoAnnots: Array<{pageNum:number,y_td:number,marchamos:string[]}>
  * }>}
  */
-export async function pdfExtract(file) {
+/**
+ * Construye un matcher {dateRe,timeRe,order,yearDigits} a partir de UNA
+ * variante de cita configurada (tabla cita_patterns). DUPLICADO a
+ * propósito desde features/citas/cita-pattern-registry.js — pdf.js no
+ * importa ningún módulo propio (ver nota de cabecera, mismo criterio
+ * que MAX_MARCH_SLOTS). Si cambias esta función, cambia también su
+ * gemela en cita-pattern-registry.js (esa es la que consume la UI de
+ * administración para la vista previa en vivo).
+ * @private
+ */
+function _buildCitaVariantMatcher(p) {
+  const digit = p.allow_single_digit ? '\\d{1,2}' : '\\d{2}';
+  const year  = p.year_digits === 2 ? '\\d{2}' : '\\d{4}';
+  const sepMap = { '/': '/', '-': '-', '.': '\\.' };
+  const sep = sepMap[p.date_sep] || '/';
+  const order = { DMY: ['D','M','Y'], MDY: ['M','D','Y'], YMD: ['Y','M','D'] }[p.date_order] || ['D','M','Y'];
+  const parts = order.map(k => k === 'Y' ? year : digit);
+  const dateRe = new RegExp(`(${parts[0]})${sep}(${parts[1]})${sep}(${parts[2]})`);
+  const timeSepMap = { ':': '[:.;]', '.': '\\.', h: '[hH]' };
+  const timeRe = p.has_time ? new RegExp(`(\\d{1,2})${timeSepMap[p.time_sep] || '[:.;]'}\\s*(\\d{2})(?![\\/\\-\\d])`) : null;
+  return { dateRe, timeRe, order, yearDigits: p.year_digits === 2 ? 2 : 4 };
+}
+
+/** Prueba `text` contra un matcher ya compilado por _buildCitaVariantMatcher(). @private */
+function _matchCitaVariant(text, matcher) {
+  const m = text.match(matcher.dateRe);
+  if (!m) return null;
+  const parts = {};
+  matcher.order.forEach((k, i) => { parts[k] = parseInt(m[i + 1], 10); });
+  const year = matcher.yearDigits === 2 ? parts.Y + 2000 : parts.Y;
+  let hour = null, minute = null;
+  if (matcher.timeRe) {
+    const tm = text.match(matcher.timeRe);
+    if (tm) { hour = parseInt(tm[1], 10); minute = parseInt(tm[2], 10); }
+  }
+  return { day: parts.D, month: parts.M, year, hour, minute };
+}
+
+/**
+ * @param {File} file
+ * @param {Array<object>} [citaPatterns] — variantes activas de
+ *   State.citaPatterns (ver features/citas/cita-pattern-store.js),
+ *   pasadas por el caller (Events.handlePDFs) — NUEVO (Fase 1,
+ *   oct-2026). pdf.js sigue sin importar Supabase/State: solo recibe
+ *   datos planos. Se prueban EN ORDEN, únicamente como fallback cuando
+ *   el regex estándar (más abajo) no matcheó — nunca lo reemplazan.
+ */
+export async function pdfExtract(file, citaPatterns = []) {
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
   const lines = [], annots = [], citaMisses = [], marchamoAnnots = [];
@@ -651,6 +731,34 @@ export async function pdfExtract(file) {
         const marchList = _extractMarchamoAnnotation(allText);
         if (marchList) {
           marchamoAnnots.push({ pageNum: p, y_td, marchamos: marchList });
+          continue;
+        }
+
+        // NUEVO (Fase 1 — catálogo de variantes de cita, oct-2026): si
+        // el regex estándar no matcheó, se prueban las variantes
+        // activas configuradas desde el Centro de Mantenimiento, en
+        // orden, primera que matchee gana. Formato de salida idéntico
+        // al del regex estándar (mismo ajuste de +1 minuto) — se
+        // duplica esa lógica aquí en vez de refactorizar el bloque de
+        // abajo, a propósito: el camino ya probado en producción queda
+        // intacto, cero riesgo de romperlo con este cambio.
+        let variantHit = null;
+        for (const cfgPattern of citaPatterns) {
+          variantHit = _matchCitaVariant(allText, _buildCitaVariantMatcher(cfgPattern));
+          if (variantHit) break;
+        }
+        if (variantHit) {
+          let { day, month, year, hour, minute } = variantHit;
+          if (hour !== null && minute !== null) {
+            minute += 1;
+            if (minute >= 60) { minute = 0; hour += 1; }
+            if (hour >= 24) hour = 0;
+          }
+          const fecha = String(day).padStart(2, '0') + '/' + String(month).padStart(2, '0') + '/' + year;
+          const citaTxt = hour !== null
+            ? `${fecha} ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+            : fecha;
+          annots.push({ pageNum: p, y_td, cita: citaTxt.trim() });
           continue;
         }
 
@@ -732,7 +840,7 @@ function _pushMarchamo(raw, marchamos, issues) {
  * @returns {string[]|null} lista de marchamos válidos, o null si el
  *   texto no tiene esa forma (algún token no pasa _isValidMarchamo)
  */
-function _extractMarchamoAnnotation(text) {
+export function _extractMarchamoAnnotation(text) {
   const tokens = String(text || '').trim().split(/[\s,;]+/).map(t => t.trim()).filter(Boolean);
   if (!tokens.length) return null;
   return tokens.every(t => _isValidMarchamo(t)) ? tokens : null;
@@ -751,7 +859,7 @@ function _extractMarchamoAnnotation(text) {
  * @param {string[]} values — marchamos detectados en la anotación
  * @returns {boolean} true si agregó al menos un valor nuevo
  */
-function _mergeAnnotationMarchamos(marchamos, values) {
+export function _mergeAnnotationMarchamos(marchamos, values) {
   let applied = false;
   for (const val of values) {
     if (marchamos.includes(val)) continue;
@@ -845,11 +953,24 @@ function _dedupeByDestino(list) {
  *   sub-arreglo contiguo de rawRows)
  */
 function _splitUnifiedBlocksByMarchamo(rawRows) {
+  return _splitBlocks(rawRows, r =>
+    (r.marchamos && r.marchamos.length) || (r.marchamoIssues && r.marchamoIssues.length));
+}
+
+/**
+ * Corta `rows` en sub-arreglos contiguos: cada fila (que no sea la
+ * primera) para la que `startsNewBlock(fila, filaAnterior)` sea
+ * verdadero abre un bloque nuevo. Base común de los dos criterios de
+ * partición por remolque (por placa y por marchamo). @private
+ * @param {Array<object>} rows
+ * @param {(row:object, prev:object) => any} startsNewBlock
+ * @returns {Array<Array<object>>}
+ */
+function _splitBlocks(rows, startsNewBlock) {
   const blocks = [];
   let current = [];
-  rawRows.forEach((r, i) => {
-    const hasOwnMarchamo = (r.marchamos && r.marchamos.length) || (r.marchamoIssues && r.marchamoIssues.length);
-    if (i > 0 && hasOwnMarchamo) {
+  rows.forEach((r, i) => {
+    if (i > 0 && startsNewBlock(r, rows[i - 1])) {
       blocks.push(current);
       current = [];
     }
@@ -857,6 +978,40 @@ function _splitUnifiedBlocksByMarchamo(rawRows) {
   });
   if (current.length) blocks.push(current);
   return blocks;
+}
+
+/**
+ * Divide rawRows de una ruta unificada en bloques por REMOLQUE usando
+ * la columna "Placa Trailer" de la tabla de datos — NUEVO (oct-2026,
+ * ver nota de cabecera "FIX (oct-2026) — ruta unificada con tiendas").
+ *
+ * PROBLEMA que corrige: _splitUnifiedBlocksByMarchamo() asume que WTMS
+ * imprime marchamo SOLO en la primera fila de cada remolque. Con
+ * entregas a TIENDA no es así — cada tienda trae su propio sello, así
+ * que TODAS las filas traen marchamo → salen N bloques (no 2) → se cae
+ * al respaldo "corte por mitad", que solo acierta cuando cada remolque
+ * lleva igual número de tiendas. Con reparto desigual (1+2, 1+3, 3+1…,
+ * el caso común: 6104-6105, 1116-1117, 6116-6117, 1110-1111) una tienda
+ * del remolque B queda asignada a la ruta del remolque A: su clave
+ * `ruta|D|destino` ya no coincide con el Excel y la entrega "no se
+ * detecta".
+ *
+ * La placa del trailer es la señal física en cargas a TIENDA (un
+ * remolque = una ruta) y viaja en CADA fila, sin importar cuántas
+ * tiendas o marchamos traiga. Se corta cada vez que la placa cambia
+ * respecto a la fila anterior. Se aplica sobre filas YA filtradas (sin
+ * HUBs de ruta alterna), así que sus placas no cuentan.
+ *
+ * ADVERTENCIA: NO es fiable en cargas HUB (WTMS repite la misma placa
+ * en casi todas las filas) — por eso el caller la usa SOLO cuando el
+ * criterio por marchamo no dio 2 bloques. Si tampoco da 2 (ej. una sola
+ * placa), el caller cae al corte por mitad — nunca peor que antes.
+ * @private
+ * @param {Array<{placa:string}>} rawRows
+ * @returns {Array<Array<object>>}
+ */
+function _splitUnifiedBlocksByTrailer(rawRows) {
+  return _splitBlocks(rawRows, (r, prev) => r.placa !== prev.placa);
 }
 
 /**
@@ -1012,7 +1167,12 @@ const rutas        = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName]
   // usa _pushMarchamo() para marchamos. El grupo del marchamo de
   // encabezado sigue siendo \S+ OPCIONAL — ver nota de cabecera "FIX
   // (jul-2026) — bug del marchamo ausente por completo".
-  const ROW_RE  = /^CeDis\s+(?:TIENDA|HUB)\s+\S+\s+\d+\s+(\d{10})\s+(\d+)\s+\d+\s+\d+\s+\d+\s+[\d.]+(?:\s+(\S+))?$/;
+  // FIX (oct-2026 — ruta unificada con tiendas): se captura también la
+  // PLACA DEL TRAILER (grupo `placa`) — antes era un `\S+` descartado.
+  // Es la única señal física confiable de a qué remolque (= ruta)
+  // pertenece cada fila — ver _splitUnifiedBlocksByTrailer(). Grupos con
+  // nombre para que agregar campos no vuelva a correr índices numéricos.
+  const ROW_RE  = /^CeDis\s+(?:TIENDA|HUB)\s+(?<placa>\S+)\s+\d+\s+(?<factura>\d{10})\s+(?<tarimas>\d+)\s+\d+\s+\d+\s+\d+\s+[\d.]+(?:\s+(?<marchamo>\S+))?$/;
   // CONT_RE — línea de continuación que trae el destino real (grupo 1).
   // FIX (sep-2026, ver nota de cabecera "segunda factura embebida"):
   // se agrega un grupo opcional intermedio para una SEGUNDA factura de
@@ -1058,7 +1218,7 @@ const rutas        = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName]
       // específico contra el Excel sin ganar nada a cambio. Solo se
       // registra el detalle crudo en facturaIssues para diagnóstico
       // (ver features/validation/sve.js, regla 'bad_fact').
-      const facturaRaw = rm[1], tarimas = rm[2];
+      const { placa, factura: facturaRaw, tarimas, marchamo } = rm.groups;
       const factura = facturaRaw;
       const facturaIssues = [];
       if (!_isValidFactura(facturaRaw)) facturaIssues.push({ raw: facturaRaw });
@@ -1066,10 +1226,10 @@ const rutas        = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName]
       const marchamos = [], marchamoIssues = [];
 
       // Marchamo de encabezado — validado de forma independiente,
-      // nunca invalida factura/tarimas ya capturados arriba. rm[3]
+      // nunca invalida factura/tarimas ya capturados arriba. `marchamo`
       // puede venir undefined (grupo opcional) — _pushMarchamo() lo
       // maneja de forma segura (early return, no agrega nada).
-      _pushMarchamo(rm[3], marchamos, marchamoIssues);
+      _pushMarchamo(marchamo, marchamos, marchamoIssues);
 
       let destino = '';
       // NUEVO (sep-2026) — se guarda la posición de ESTE renglón
@@ -1096,7 +1256,7 @@ const rutas        = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName]
           if (cm[2]) {
             const raw2 = cm[2];
             extraFacturaRow = {
-              factura: raw2, tarimas: '0', marchamos: [], marchamoIssues: [],
+              factura: raw2, tarimas: '0', marchamos: [], marchamoIssues: [], placa,
               facturaIssues: _isValidFactura(raw2) ? [] : [{ raw: raw2 }],
               destino: cm[1]
             };
@@ -1117,7 +1277,7 @@ const rutas        = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName]
         if (MARC_CANDIDATE_RE.test(tl)) { _pushMarchamo(tl, marchamos, marchamoIssues); i++; }
         else break;
       }
-      rawRows.push({ factura, tarimas, marchamos, marchamoIssues, facturaIssues, destino });
+      rawRows.push({ factura, tarimas, marchamos, marchamoIssues, facturaIssues, destino, placa });
       // NUEVO (sep-2026): se empuja DESPUÉS del row principal — ver
       // comentario junto a la declaración de extraFacturaRow arriba.
       if (extraFacturaRow) rawRows.push(extraFacturaRow);
@@ -1141,7 +1301,18 @@ const rutas        = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName]
     // asignado a su ruta real. Un bloque con un solo destino se
     // comporta igual que antes; un bloque con destinos distintos ahora
     // genera una entrega por cada uno, con la ruta correcta.
-    const blocks = _splitUnifiedBlocksByMarchamo(filteredRawRows);
+    // FIX (oct-2026 — ruta unificada con tiendas): cascada de criterios.
+    // 1) marchamo de encabezado — comportamiento histórico, válido cuando
+    //    WTMS lo imprime solo en la 1ª fila de cada remolque (cargas HUB).
+    // 2) placa del trailer — solo si (1) no dio exactamente 2 bloques
+    //    (cargas a TIENDA: un marchamo por tienda). NO va primero: en
+    //    cargas HUB la placa es poco fiable (misma placa en casi todas
+    //    las filas), verificado contra PDFs reales.
+    // 3) corte por mitad — respaldo de último recurso (abajo).
+    const marchBlocks = _splitUnifiedBlocksByMarchamo(filteredRawRows);
+    const blocks = marchBlocks.length === 2
+      ? marchBlocks
+      : _splitUnifiedBlocksByTrailer(filteredRawRows);
     let grupos;
     if (blocks.length === 2) {
       grupos = blocks;
@@ -1151,7 +1322,7 @@ const rutas        = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName]
       // patrón inesperado). Se conserva el corte por mitad como
       // antes — nunca peor que el comportamiento previo — con aviso
       // en consola para diagnóstico manual.
-      console.warn(`[PDF] ${baseName}: se esperaban 2 bloques por remolque (detección por marchamo) pero se detectaron ${blocks.length} — usando corte por mitad como respaldo.`);
+      console.warn(`[PDF] ${baseName}: se esperaban 2 bloques por remolque pero se detectaron ${marchBlocks.length} por marchamo y ${blocks.length} por placa de trailer — usando corte por mitad como respaldo.`);
       const mid = Math.ceil(filteredRawRows.length / 2);
       grupos = [filteredRawRows.slice(0, mid), filteredRawRows.slice(mid)];
     }
@@ -1173,7 +1344,13 @@ const rutas        = isUnified ? [unifiedMatch[1], unifiedMatch[2]] : [baseName]
       // mezclaría datos de dos rutas). Ver _groupBlockByDestino().
       const entregas = _groupBlockByDestino(grupo);
       entregas.forEach(e => {
-        result.push({ ruta, operador, destino: e.destino, factura: e.factura, tarimas: e.tarimas, marchamos: e.marchamos, marchamoIssues: e.marchamoIssues, facturaIssues: e.facturaIssues, cita: '', hrDespacho });
+        // FIX (oct-2026 — asignación bloque→ruta por Excel): `bloque` (0 =
+        // primero impreso en el PDF) y `rutasPar` (ambas rutas, mayor
+        // primero) permiten que processors/unified-routes.js corrija la
+        // asignación con evidencia del Excel — el PDF NO dice qué remolque
+        // es qué ruta (ver nota de cabecera). `ruta` conserva la regla
+        // histórica (bloque 0 → ruta mayor) como valor por defecto.
+        result.push({ ruta, operador, destino: e.destino, factura: e.factura, tarimas: e.tarimas, marchamos: e.marchamos, marchamoIssues: e.marchamoIssues, facturaIssues: e.facturaIssues, cita: '', hrDespacho, bloque: idx, rutasPar: rutasPorMagnitud });
       });
     });
   } else {

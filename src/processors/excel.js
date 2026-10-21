@@ -3,6 +3,18 @@
  * Lectura del Excel macro: hoja RUTEO NUEVO (rutas del día) y hoja
  * CONCENTRADO FACTURAS (datos de facturación).
  *
+ * NUEVO (oct-2026 — se eliminan las macros): processXLS() reconoce DOS
+ * formatos por el encabezado de la hoja de rutas, y el MODO elegido por el
+ * operador (features/source-mode.js) decide cuál acepta:
+ *   a) CRUDO (modo sin macro) — la hoja "RUTEO NUEVO " del libro ESTATUS
+ *      RUTAS tal cual (CORTINA / LLEGA / CONGE-REFRI / RUTA / DETTE…). Se
+ *      aplana con processors/ruteo-status.js (lo que hacían ArbeyJr +
+ *      POST_PROCESO). NO trae facturas: devuelve `factData: null` (el GLS
+ *      sale del Reporte de Facturación y la hora queda en blanco).
+ *   b) YA PROCESADO por la macro (modo macro) — RUTEO NUEVO + CONCENTRADO
+ *      FACTURAS; flujo anterior, sin cambios.
+ * Sin `mode` (scripts de validación) detecta el formato solo.
+ *
  * CAMBIO (sep-2026 — concentrado de facturas OBLIGATORIO):
  *   Antes, si el Excel no traía la hoja CONCENTRADO FACTURAS (o la hoja
  *   no tenía una columna de invoice reconocible, o venía vacía),
@@ -48,8 +60,29 @@
  *   - formatFactDate (utils/format.js) — normaliza el valor de la celda de
  *     fecha de facturación (puede venir como Date, número serial o string)
  */
-import { SHEET_RUTEO, SHEET_FACTURAS } from '../core/constants.js';
+import { SHEET_RUTEO, SHEET_FACTURAS, MODE_MACRO, MODE_SIN_MACRO } from '../core/constants.js';
 import { formatFactDate } from '../utils/format.js';
+import { isRuteoStatusHeader, flattenRuteoStatus, resolveFecha } from './ruteo-status.js';
+
+/**
+ * Formato CRUDO de ESTATUS RUTAS → filas planas. Se relee el libro SIN
+ * `cellDates` a propósito: las horas deben llegar como fracción de día
+ * (la regla de cruce de medianoche trabaja sobre ese número) y así se
+ * evita el ruido de zona horaria de SheetJS en fechas.
+ * @private
+ */
+function readStatusWorkbook(buf, sheetName, fileName) {
+  const wb   = XLSX.read(buf, { type: 'array' });
+  const grid = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, raw: true, defval: '' });
+  const { date, fromName } = resolveFecha(fileName);
+  const { rows } = flattenRuteoStatus(grid, { fecha: date });
+  if (!rows.length) {
+    throw new Error('El ESTATUS RUTAS no trae entregas (filas con DETTE y CAJAS) — verifica el archivo.');
+  }
+  const p = n => String(n).padStart(2, '0');
+  const fechaTxt = `${p(date.getDate())}/${p(date.getMonth() + 1)}/${date.getFullYear()}${fromName ? '' : ' (hoy)'}`;
+  return { rows, factData: null, ruteoName: sheetName, factSheetLabel: `ESTATUS RUTAS · ${fechaTxt}` };
+}
 
 /**
  * Lee el archivo Excel y extrae:
@@ -60,16 +93,17 @@ import { formatFactDate } from '../utils/format.js';
  *     reconocible (INVOICE / FACTURA / FOLIO) y al menos una factura
  *
  * @param {File} file
+ * @param {{mode?: 'macro'|'sinmacro'}} [opts]  modo del operador; sin él, autodetecta
  * @returns {Promise<{
  *   rows: Array<object>,
- *   factData: Map<string, {gls:string, horaFact:string}>,
+ *   factData: Map<string, {gls:string, horaFact:string}>|null,   // null = formato crudo (facturas van aparte)
  *   ruteoName: string,
  *   factSheetLabel: string
  * }>}
  * @throws {Error} si falta la hoja de facturas, no tiene columna de
- *   invoice reconocible, o no contiene ninguna factura
+ *   invoice reconocible, o no contiene ninguna factura (solo formato macro)
  */
-export async function processXLS(file) {
+export async function processXLS(file, { mode } = {}) {
   const buf = await file.arrayBuffer();
   const wb  = XLSX.read(buf, { type: 'array', cellDates: true });
 
@@ -77,6 +111,20 @@ export async function processXLS(file) {
     SHEET_RUTEO.some(s => n.toUpperCase().includes(s.toUpperCase()))
   ) || wb.SheetNames[0];
   const wsRuteo = wb.Sheets[ruteoName];
+
+  // Formato CRUDO de ESTATUS RUTAS (sin macro) — ver nota de cabecera. Cada
+  // modo acepta SOLO su formato: subir el archivo equivocado se avisa aquí,
+  // antes de asignar nada al State.
+  const rawHeader = XLSX.utils.sheet_to_json(wsRuteo, { header: 1 })[0] || [];
+  const isRaw = isRuteoStatusHeader(rawHeader);
+  if (mode === MODE_SIN_MACRO && !isRaw) {
+    throw new Error('Este archivo no es el ESTATUS RUTAS crudo (hoja RUTEO NUEVO con CORTINA / LLEGA / CONGE-REFRI…). Si es el Excel que ya pasó por la macro, cambia a Modo macro.');
+  }
+  if (mode === MODE_MACRO && isRaw) {
+    throw new Error('Este archivo es el ESTATUS RUTAS crudo (sin macro). Cambia a Modo sin macro, o sube el Excel que ya pasó por la macro.');
+  }
+  if (isRaw) return readStatusWorkbook(buf, ruteoName, file.name);
+
   const raw     = XLSX.utils.sheet_to_json(wsRuteo, { defval: '' });
 
   // ── FECHA — ver nota de cabecera "AJUSTE (jul-2026 — FECHA del
@@ -129,7 +177,7 @@ export async function processXLS(file) {
     SHEET_FACTURAS.some(s => n.toUpperCase().includes(s.toUpperCase()))
   );
   if (!factName) {
-    throw new Error('El Excel macro no contiene la hoja CONCENTRADO FACTURAS — es obligatoria. Verifica el archivo.');
+    throw new Error('El Excel no es el formato crudo de ESTATUS RUTAS (CORTINA / LLEGA / CONGE-REFRI…) ni trae la hoja CONCENTRADO FACTURAS — verifica el archivo.');
   }
 
   const wsFact  = wb.Sheets[factName];

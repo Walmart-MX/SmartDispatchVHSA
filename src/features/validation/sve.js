@@ -326,7 +326,7 @@ export function runSVE(rows, screenCount, excludedCount) {
   rows.forEach(r => { if (!String(getMapped(r,'RUTA')||'').trim()) noRutaCnt++; });
   if (noRutaCnt) rawAdd(SVE_CRIT,'missing_ruta','','RUTA',
     `${noRutaCnt} registro${noRutaCnt>1?'s':''} sin número de RUTA.`,
-    'Revisa el Excel macro: busca filas con columna RUTA vacía.',
+    'Revisa el Excel de rutas: busca filas con columna RUTA vacía.',
     noRutaCnt > 1 ? `×${noRutaCnt}` : '');
 
   // D1: Operador y Licencia — atributos de la RUTA COMPLETA (mismo dato

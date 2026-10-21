@@ -216,6 +216,7 @@
  *   - Events (events/events.js) — resuelto en runtime vía _setEvents()
  */
 import { State } from '../core/state.js';
+import { MODE_MACRO } from '../core/constants.js';
 import { escH } from '../utils/dom.js';
 import { fmtDate } from '../utils/format.js';
 import {
@@ -228,6 +229,7 @@ import { CATALOGS } from '../features/catalogs/catalog-registry.js';
 import { priorityTier } from '../features/incidents/incident-engine.js';
 import { INCIDENT_TYPES } from '../features/incidents/incident-types.js';
 import { getInlineFix } from '../features/incidents/inline-fix.js';
+import { renderCitaPatterns as _renderCitaPatterns, setCitaPatternStatus as _setCitaPatternStatus } from './cita-pattern-ui.js';
 import { Motion } from '../theme-engine/motion.js';
 
 let Events;
@@ -299,7 +301,7 @@ let _fixPeakTotal = null;
 
 // Mapea la clave de fuente ('pdf'|'xls'|'wtms'|'desp') al sufijo de
 // IDs usado en el HTML de Preparación (#dropPDF/#pdfSub/#pdfStatus, etc).
-const SOURCE_ID = { pdf: 'PDF', xls: 'XLS', wtms: 'WTMS', desp: 'DESP' };
+const SOURCE_ID = { pdf: 'PDF', xls: 'XLS', wtms: 'WTMS', desp: 'DESP', montos: 'MONTOS' };
 
 // Texto por defecto del subtítulo de Correcciones — NUEVO (ago-2026,
 // ver nota de cabecera "reabrir para corregir"). Se guarda aquí como
@@ -313,11 +315,21 @@ export const UI = {
 
   // ── Theme ──
   applyTheme(t) {
-    document.documentElement.setAttribute('data-theme', t);
+    // NUEVO (oct-2026 — mitigar parpadeo al alternar claro/oscuro): la
+    // clase .theme-transitioning habilita una transición CSS breve
+    // (ver index.html, regla junto a [data-theme="dark"]) SOLO durante
+    // el cambio -- se quita sola después, para no dejar transiciones
+    // de color pegadas en el resto de la app (hovers, focus, etc).
+    const root = document.documentElement;
+    root.classList.add('theme-transitioning');
+    clearTimeout(UI._themeTransitionTimer);
+    UI._themeTransitionTimer = setTimeout(() => root.classList.remove('theme-transitioning'), 300);
+
+    root.setAttribute('data-theme', t);
     localStorage.setItem('sd_theme', t);
     State.theme = t;
     const btn = document.getElementById('btnTheme');
-    if (btn) { btn.textContent = t === 'dark' ? '☀️' : '🌙'; btn.classList.toggle('on', t === 'dark'); }
+    if (btn) { btn.textContent = t === 'dark' ? String.fromCodePoint(9728) : String.fromCodePoint(127769); btn.classList.toggle('on', t === 'dark'); }
     const optLight = document.getElementById('themeOptLight');
     const optDark  = document.getElementById('themeOptDark');
     if (optLight) optLight.classList.toggle('selected', t === 'light');
@@ -419,9 +431,9 @@ showAuthFull() {
 
   /**
    * Actualiza una tarjeta de fuente en la pantalla Preparación.
-   * @param {string} key — 'pdf'|'xls'|'wtms'|'desp'
+   * @param {string} key — 'pdf'|'xls'|'wtms'|'desp'|'montos'
    * @param {boolean} done — true = fuente cargada (tarjeta en verde)
-   * @param {string} statusText — texto corto (ej. '✓ Completo')
+   * @param {string} statusText — texto corto (ej. 'Completo')
    * @param {string} subText — detalle (ej. '42 archivos · 238 entregas')
    */
   setSourceStatus(key, done, statusText, subText) {
@@ -443,7 +455,7 @@ showAuthFull() {
    * (.up-card.processing, ver index.html). Llamar con on=true al
    * iniciar la lectura del archivo y on=false en un finally (éxito o
    * error), para que nunca quede "respirando" indefinidamente.
-   * @param {string} key — 'pdf'|'xls'|'wtms'|'desp'
+   * @param {string} key — 'pdf'|'xls'|'wtms'|'desp'|'montos'
    * @param {boolean} on
    */
   setSourceProcessing(key, on) {
@@ -457,6 +469,34 @@ showAuthFull() {
     // arrancar, y nunca si ya estaba quieta) — sección 6: "tarjeta de
     // fuente que termina de procesar: pop del ícono (400ms)".
     if (wasProcessing && !on) Motion.popIcon(card.querySelector('.up-ico'));
+  },
+
+  /**
+   * Textos de la tarjeta Excel según el modo de carga (features/source-mode.js).
+   * En modo sin macro desaparece "Excel macro + concentrado" y queda solo Ruteo.
+   * @param {string|null} mode
+   * @returns {{title:string, sub:string}}
+   */
+  xlsCardText(mode) {
+    return mode === MODE_MACRO
+      ? { title: 'Excel macro', sub: 'RUTEO NUEVO \u00b7 CONCENTRADO FACTURAS' }
+      : { title: 'Ruteo',       sub: 'Hoja RUTEO NUEVO del ESTATUS RUTAS' };
+  },
+
+  /**
+   * Refleja el modo en la UI: título/subtítulo de la tarjeta Excel (el subtítulo
+   * solo si la tarjeta está vacía — si ya cargó, muestra el resumen del archivo)
+   * y el texto del botón de cambio de modo en Preparación.
+   * @param {string|null} mode
+   */
+  applySourceMode(mode) {
+    const { title, sub } = UI.xlsCardText(mode);
+    const titleEl = document.getElementById('xlsTitle');
+    const subEl   = document.getElementById('xlsSub');
+    if (titleEl) titleEl.textContent = title;
+    if (subEl && !document.getElementById('dropXLS')?.classList.contains('done')) subEl.textContent = sub;
+    const btn = document.getElementById('btnChangeMode');
+    if (btn) btn.textContent = `${mode === MODE_MACRO ? 'Modo macro' : 'Modo sin macro'} \u00b7 Cambiar`;
   },
 
   /** Agrega una nota adicional (ej. aviso de caché histórico) al sub-texto de una fuente, sin pisar el texto principal. */
@@ -500,11 +540,14 @@ showAuthFull() {
     const xlsCount  = State.xlsData ? State.xlsData.length : 0;
     const wtmsCount = State.wtmsData.size;
     const despCount = State.despData.size;
+    const montosCount = State.invoiceData.size;
+    const factChip = State.factData.size ? `\n      <span class="chip ok">${State.factData.size} facturas</span>` : '';
     chipsEl.innerHTML = `
-      <span class="chip ok">📄 ${pdfCount} PDFs</span>
-      <span class="chip ok">📊 ${xlsCount} rutas</span>
-      <span class="chip ok">🛰️ ${wtmsCount} WTMS</span>
-      <span class="chip ok">📋 ${despCount} despacho</span>`;
+      <span class="chip ok">${pdfCount} PDFs</span>
+      <span class="chip ok">${xlsCount} rutas</span>${factChip}
+      <span class="chip ok">${wtmsCount} WTMS</span>
+      <span class="chip ok">${despCount} despacho</span>
+      <span class="chip ok">${montosCount} montos</span>`;
     const timeEl = document.getElementById('prepCollapsedTime');
     if (timeEl) timeEl.textContent = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
   },
@@ -751,16 +794,16 @@ showAuthFull() {
       const msg = !ok
         ? 'Faltan fuentes por cargar — vuelve a Preparación'
         : 'Sin datos aún';
-      tbody.innerHTML = `<tr><td colspan="11"><div class="empty-state">
-        <div class="empty-ico">📂</div><div class="empty-title">${escH(msg)}</div>
+      tbody.innerHTML = `<tr><td colspan="12"><div class="empty-state">
+        <div class="empty-ico">&#128237;</div><div class="empty-title">${escH(msg)}</div>
       </div></td></tr>`;
       return;
     }
 
     const rows = UI._filteredRows(statusMap);
     if (!rows.length) {
-      tbody.innerHTML = `<tr><td colspan="11"><div class="empty-state">
-        <div class="empty-ico">🔍</div><div class="empty-title">Sin resultados para este filtro</div>
+      tbody.innerHTML = `<tr><td colspan="12"><div class="empty-state">
+        <div class="empty-ico">&#128269;</div><div class="empty-title">Sin resultados para este filtro</div>
       </div></td></tr>`;
       return;
     }
@@ -781,6 +824,13 @@ showAuthFull() {
         const s = String(v ?? '').trim();
         return s ? escH(s) : '<span class="dim">—</span>';
       };
+      // Monto Factura: viene como number (o '') de merge.js — formato con
+      // separador de miles/decimales solo para despliegue, getMapped() /
+      // el Excel exportado siguen usando el number crudo (export.js).
+      const montoRaw = getMapped(row, 'MONTO FACTURA');
+      const montoCell = Number.isFinite(montoRaw)
+        ? escH(montoRaw.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
+        : '<span class="dim">—</span>';
       const ruta = String(row['RUTA'] || '').trim();
       return `<tr>
         <td class="rt">${escH(ruta)}</td>
@@ -789,11 +839,12 @@ showAuthFull() {
         <td>${cell('TARIMAS')}</td>
         <td>${cell('MARCHAMO 1')}</td>
         <td>${cell('FAC.')}</td>
+        <td>${montoCell}</td>
         <td>${cell('TIENDA')}</td>
         <td>${cell('TRACTOR ')}</td>
         <td>${cell('REMOLQUE')}</td>
         <td><span class="${cls}">${label}</span></td>
-        <td><button class="row-edit-btn" data-edit-ruta="${escH(ruta)}" data-edit-rowid="${escH(row._rowId)}">✎</button></td>
+        <td><button class="row-edit-btn" data-edit-ruta="${escH(ruta)}" data-edit-rowid="${escH(row._rowId)}">Editar</button></td>
       </tr>`;
     }).join('');
   },
@@ -815,10 +866,30 @@ showAuthFull() {
       { key: 'fixed', label: 'Corregidas',       cnt: fixed },
       { key: 'ok',    label: 'Completas',        cnt: ok    },
     ];
+
+    // Snapshot de los conteos previos ANTES de tirar el innerHTML viejo —
+    // se usa después del rebuild para saber que chip cambio de numero y
+    // darle un destello (Motion.flashBg), en vez de reconstruir todo en
+    // silencio como antes.
+    const prevCounts = new Map();
+    bar.querySelectorAll('.fchip').forEach(btn => {
+      prevCounts.set(btn.dataset.filter, btn.querySelector('.cnt')?.textContent);
+    });
+
     bar.innerHTML = DEFS.map(d => `
       <button class="fchip${d.key === _tableFilter ? ' active' : ''}" data-filter="${d.key}">
         ${d.label} <span class="cnt">${d.cnt}</span>
       </button>`).join('');
+
+    if (prevCounts.size) {
+      DEFS.forEach(d => {
+        const prev = prevCounts.get(d.key);
+        if (prev !== undefined && prev !== String(d.cnt)) {
+          const cntEl = bar.querySelector(`.fchip[data-filter="${d.key}"] .cnt`);
+          Motion.flashBg(cntEl);
+        }
+      });
+    }
   },
 
   /** Sub-título de la pantalla Mesa de Trabajo — "N rutas del día operativo · actualizado HH:MM" */
@@ -848,9 +919,9 @@ showAuthFull() {
   /** Reinicia el "antes" del comparativo de calidad — llamar junto a resetFixPeak(), en el mismo momento (merge fresco), nunca tras una edición individual. */
   resetQualityBaseline() { _qualityBaseline = null; },
 
-  /** Pinta el Dashboard de Calidad: ring SVG, comparativo antes/después, grilla de métricas y CTA de cierre. */
+  /** Pinta el Dashboard de Calidad: badge emoji + numero, comparativo antes/despues, grilla de metricas y CTA de cierre. */
   renderQualityScreen() {
-    const ringArc  = document.getElementById('qArc');
+    const ringBadge = document.getElementById('qRingBadge');
     const ringNum  = document.getElementById('qRingNum');
     const heroTtl  = document.getElementById('qHeroTitle');
     const heroSub  = document.getElementById('qHeroSub');
@@ -858,13 +929,12 @@ showAuthFull() {
     const baFinal  = document.getElementById('qBaFinal');
     const metrics  = document.getElementById('qMetrics');
     const ctaWrap  = document.getElementById('qFinalCta');
-    if (!ringArc || !metrics) return;
+    if (!metrics) return;
 
     const { ok } = Events ? Events.checkSources() : { ok: true };
-    const CIRC = 452.4; // 2·π·72 — mismo radio que el SVG del anillo
 
     if (!ok || !State.merged.length) {
-      ringArc.style.strokeDashoffset = CIRC;
+      if (ringBadge) ringBadge.textContent = String.fromCodePoint(128202); // chart neutro — sin datos aun
       if (ringNum) ringNum.textContent = '—';
       if (heroTtl) heroTtl.textContent = 'Aún no hay datos';
       if (heroSub) heroSub.textContent = 'Completa las 4 fuentes en Preparación y corrige las incidencias para ver el resultado aquí.';
@@ -878,7 +948,13 @@ showAuthFull() {
     const quality = State.sveLastQuality;
     if (_qualityBaseline === null) _qualityBaseline = quality;
 
-    ringArc.style.strokeDashoffset = String(CIRC * (1 - quality / 100));
+    if (ringBadge) {
+      // Mismos cortes que el texto del hero, abajo — un solo criterio de "buena/regular/mala" para toda la pantalla.
+      const tierIco = quality >= 95 ? String.fromCodePoint(127942)  // trofeo
+        : quality >= 80 ? String.fromCodePoint(128077)              // pulgar arriba
+        : String.fromCodePoint(128295);                              // llave inglesa
+      if (ringBadge.textContent !== tierIco) { ringBadge.textContent = tierIco; Motion.popIcon(ringBadge); }
+    }
     if (ringNum) Motion.animateNumber(ringNum, quality, { suffix: '%' });
 
     const { quick, review, confirm, multi } = UI._buildFixBuckets();
@@ -1720,25 +1796,39 @@ showAuthFull() {
     if (cls === 'err') Motion.shake(el);
   },
 
+  /** Delega a ui/cita-pattern-ui.js — ver ese archivo para el detalle de render. */
+  renderCitaPatterns(patterns) { _renderCitaPatterns(patterns); },
+  /** Delega a ui/cita-pattern-ui.js. */
+  setCitaPatternStatus(msg, cls) { _setCitaPatternStatus(msg, cls); },
+
   // ── Cache History ──
   renderCacheHistory() {
     const summary  = FactCache.dateSummary();
     const badge    = document.getElementById('cacheHistBadge');
     const list     = document.getElementById('cacheHistList');
     const totalInv = summary.reduce((s, d) => s + d.count, 0);
+    const prevTotal = Number(badge?.dataset.lastTotal ?? -1); // -1 = primera pintada, nunca destella
 
     if (State.cacheUpdating) {
-      badge.textContent = '🔄 Actualizando…';
+      badge.textContent = `${String.fromCodePoint(128260)} Actualizando…`;
       badge.className   = 'cat-badge-count';
     } else if (!summary.length) {
-      badge.textContent = '❌ Sin datos';
+      badge.textContent = `${String.fromCodePoint(10060)} Sin datos`;
       badge.className   = 'cat-badge-count err';
     } else if (summary.some(d => d.status === 'err')) {
-      badge.textContent = `⚠️ ${summary.length} día${summary.length > 1 ? 's' : ''} · revisar`;
+      badge.textContent = `${String.fromCodePoint(9888)} ${summary.length} día${summary.length > 1 ? 's' : ''} · revisar`;
       badge.className   = 'cat-badge-count warn';
     } else {
-      badge.textContent = `✅ ${summary.length} día${summary.length > 1 ? 's' : ''} · ${totalInv} facturas`;
+      badge.textContent = `${String.fromCodePoint(9989)} ${summary.length} día${summary.length > 1 ? 's' : ''} · ${totalInv} facturas`;
       badge.className   = 'cat-badge-count';
+    }
+    // Destello si el total de facturas cambio desde la ultima pintada --
+    // va DESPUES de fijar className a proposito (Motion.flashBg agrega
+    // una clase temporal; si corriera antes, el className de arriba la
+    // pisaria sin que se vea nada).
+    if (badge) {
+      if (prevTotal >= 0 && prevTotal !== totalInv) Motion.flashBg(badge);
+      badge.dataset.lastTotal = String(totalInv);
     }
 
     if (!summary.length) {
@@ -1872,7 +1962,7 @@ showAuthFull() {
     const tbody = document.getElementById(tbodyId);
     const slice = rows.slice(0, 50);
     if (!slice.length) {
-      tbody.innerHTML = '<tr><td colspan="22"><div class="empty-state"><div class="empty-ico">📂</div><div class="empty-title">Sin datos</div></div></td></tr>';
+      tbody.innerHTML = '<tr><td colspan="23"><div class="empty-state"><div class="empty-ico">&#128237;</div><div class="empty-title">Sin datos</div></div></td></tr>';
       return;
     }
     tbody.innerHTML = slice.map(row => {
@@ -1907,9 +1997,12 @@ showAuthFull() {
     Autosave.clear();
     State.pdfData  = new Map();
     State.xlsData  = null;
+    State.xlsSource = null;
+    State.xlsLabel  = '';
     State.factData = new Map();
     State.despData = new Map();
     State.wtmsData = new Map();   // FIX: faltaba en el reset original — bug latente desde que se agregó WTMS
+    State.invoiceData = new Map(); // 5ª fuente (OBLIGATORIA) — mismo tratamiento que wtmsData, no se persiste
     State.excludedDettes = new Set();
     State.excludedCount  = 0;
     // NUEVO (ago-2026 — "reabrir para corregir"): salir del modo
@@ -1924,12 +2017,14 @@ showAuthFull() {
     State.captureStartedAt = null;
 
     UI.setSourceStatus('pdf',  false, 'Arrastra o haz clic', 'Todos los archivos del día a la vez');
-    UI.setSourceStatus('xls',  false, 'Arrastra o haz clic', 'Lee ambas pestañas automáticamente');
+    UI.setSourceStatus('xls',  false, 'Arrastra o haz clic', UI.xlsCardText(State.mode).sub);
     UI.setSourceStatus('wtms', false, 'Arrastra o haz clic', 'Archivo .csv');
     UI.setSourceStatus('desp', false, 'Pega desde Excel',    'Copia RUTA · CASETA · WTMS · ID\'S MASTER');
+    UI.setSourceStatus('montos', false, 'Arrastra o haz clic', 'Reporte de mainframe (monto por factura)');
     UI.setSourceProcessing('pdf',  false);
     UI.setSourceProcessing('xls',  false);
     UI.setSourceProcessing('wtms', false);
+    UI.setSourceProcessing('montos', false);
 
     document.getElementById('pasteArea').value = '';
     document.getElementById('pasteSt').textContent = '';
@@ -1953,7 +2048,7 @@ showAuthFull() {
     UI.renderSourceCheck(null);
     // updatePrepView recibe las 4 fuentes como faltantes → también
     // apaga _prepEditMode y oculta #prepEditBar/#pdfTools (sep-2026).
-    UI.updatePrepView(['PDFs de cargas','Excel macro (RUTEO NUEVO)',"Status de despacho (RUTA + ID'S MASTER)",'Reporte WTMS']);
+    UI.updatePrepView(['PDFs de cargas','Excel de rutas',"Status de despacho (RUTA + ID'S MASTER)",'Reporte WTMS']);
     UI.renderTable();
     UI.renderFixList();
     UI.renderQualityScreen();
