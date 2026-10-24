@@ -7,9 +7,10 @@
  *      día `dd-mm-aaaa`; se toma la del día operativo del ruteo.
  *   2. Texto pegado desde Excel — opción manual.
  *
- * Columnas FIJAS por posición (DESP_COLS, core/constants.js). Si el pegado
- * empieza en otra columna se recorre todo desde RUTA. Si la plantilla no
- * cuadra (p.ej. se pegaron columnas sueltas) se cae a nombre EXACTO y se avisa.
+ * Columnas FIJAS por posición (DESP_COLS, core/constants.js): la posición
+ * SIEMPRE gana aunque el título cambie (solo se avisa). Si el pegado empieza
+ * en otra columna se recorre todo desde RUTA. Nombre EXACTO únicamente cuando
+ * se pegaron columnas sueltas (la hoja pegada no alcanza a la columna AH).
  *
  * Horas: H. DESP mezcla horas sueltas (02:33) con fecha+hora. Las sueltas se
  * ubican en el día operativo con la regla del ruteo (pasadas las 22:00 = día
@@ -17,9 +18,10 @@
  *
  * Dependencias: XLSX (global, vendor) solo en readStatusBook/statusSheetGrid.
  */
-import { DESP_COLS } from '../core/constants.js';
+import { DESP_COLS, DESP_HEADER_ROW } from '../core/constants.js';
 import { operativeDateTime, excelSerialToLocal, fmtDMYHM, normDateTime } from '../utils/date.js';
 import { stripAccents } from '../utils/format.js';
+import { colLetter, gridFromA1 } from '../utils/sheet.js';
 
 const DAY_SHEET_RE  = /^(\d{2})-(\d{2})-(\d{4})$/;
 const HEADER_SEARCH = 15;   // el encabezado vive en la fila 5; margen por si pegan desde más abajo
@@ -28,13 +30,7 @@ const SERIAL_1901   = 367;  // serial < 367 = fecha de 1900: error de captura (2
 
 const normHeader = v => stripAccents(String(v ?? '')).toUpperCase().replace(/\s+/g, ' ').trim();
 const sameDay    = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-
-/** Índice 0-based → letra de columna de Excel (0 → A, 31 → AF). */
-export function colLetter(i) {
-  let s = '';
-  for (let n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s;
-  return s;
-}
+const LAST_COL   = Math.max(...Object.values(DESP_COLS).map(d => d.col));
 
 /** Hojas de día del libro, en orden cronológico: [{ name, date }]. */
 export function listDaySheets(sheetNames) {
@@ -54,28 +50,41 @@ export function sheetForDate(daySheets, fecha) {
   return (fecha && daySheets.find(s => sameDay(s.date, fecha))) || null;
 }
 
-/** Ubica las columnas: plantilla fija primero, nombre exacto como respaldo. */
-function locateColumns(header) {
-  const offset   = header.findIndex(c => normHeader(c) === 'RUTA') - DESP_COLS.ruta.col;
-  const fixed    = {};
-  const warnings = [];
-  for (const [field, def] of Object.entries(DESP_COLS)) {
-    const i = def.col + offset;
-    if (i >= 0 && def.header.test(normHeader(header[i]))) fixed[field] = i;
-    else warnings.push(`${colLetter(Math.max(i, 0))} dice "${String(header[i] ?? '').trim()}" (esperaba ${def.label})`);
-  }
-  if (!warnings.length) return { idx: fixed, how: 'columnas fijas', warnings };
+/**
+ * Ubica las columnas. La hoja completa (pegada o del archivo) SIEMPRE va por
+ * posición; un título distinto solo genera aviso. Nombre exacto únicamente si
+ * se pegaron columnas sueltas (no alcanza a la última columna fija).
+ * @param {Array<Array>} header
+ * @param {boolean} anchored — true = grid alineado a A (archivo): sin buscar el título RUTA
+ */
+function locateColumns(header, anchored) {
+  const rutaAt = anchored ? -1 : header.findIndex(c => normHeader(c) === 'RUTA');
+  const offset = rutaAt < 0 ? 0 : rutaAt - DESP_COLS.ruta.col;
 
-  // Respaldo: nombre EXACTO (nunca "contiene"). SALIDA: gana la última (la de caseta va después de la programada).
-  const byName = {};
+  if (header.length > LAST_COL + offset) {   // hoja completa: el ancho alcanza a AH (aunque haya títulos vacíos)
+    const idx = {};
+    const warnings = [];
+    for (const [field, def] of Object.entries(DESP_COLS)) {
+      const i = def.col + offset;
+      idx[field] = i;
+      if (!def.header.test(normHeader(header[i]))) {
+        warnings.push(`${colLetter(i)} dice "${String(header[i] ?? '').trim()}" (esperaba ${def.label}, leída por posición)`);
+      }
+    }
+    return { idx, how: 'columnas fijas', warnings };
+  }
+
+  // Columnas sueltas: nombre EXACTO (nunca "contiene"). SALIDA: gana la última (la de caseta va después de la programada).
+  const idx = {};
   header.forEach((c, i) => {
     const h = normHeader(c);
     if (!h) return;
     for (const [field, def] of Object.entries(DESP_COLS)) {
-      if (def.header.test(h) && (field === 'caseta' || byName[field] === undefined)) byName[field] = i;
+      if (def.header.test(h) && (field === 'caseta' || idx[field] === undefined)) idx[field] = i;
     }
   });
-  return { idx: byName, how: 'por encabezado (la plantilla no cuadra)', warnings };
+  const missing = Object.keys(DESP_COLS).filter(f => idx[f] === undefined).map(f => DESP_COLS[f].label);
+  return { idx, how: 'por encabezado (columnas sueltas)', warnings: missing.length ? [`sin columna: ${missing.join(', ')}`] : [] };
 }
 
 /**
@@ -102,15 +111,17 @@ const cellText = v => (typeof v === 'number' ? String(Math.trunc(v)) : String(v 
 /**
  * Grid (filas × celdas, desde la columna A) → datos de despacho por ruta.
  * @param {Array<Array>} grid
- * @param {{fecha: Date|null}} opts — día operativo para las horas sueltas (sin ruteo: hoy)
+ * @param {{fecha: Date|null, headerRow?: number}} opts — día operativo para las horas sueltas (sin ruteo: hoy);
+ *   headerRow = archivo: fila de encabezado fija y grid alineado a A (posición pura, sin buscar títulos)
  * @returns {{data: Map<string,object>, preview: object[], idx: object, how: string, warnings: string[]}}
  */
-export function parseStatusGrid(grid, { fecha = null } = {}) {
-  const day    = fecha || new Date();
-  const hdrRow = grid.slice(0, HEADER_SEARCH).findIndex(r => (r || []).some(c => normHeader(c) === 'RUTA'));
-  if (hdrRow < 0) throw new Error('No encontré la fila de encabezado (RUTA, H. DESP, ID MASTER…). Copia incluyendo el encabezado.');
+export function parseStatusGrid(grid, { fecha = null, headerRow } = {}) {
+  const day      = fecha || new Date();
+  const anchored = headerRow !== undefined;
+  const hdrRow   = anchored ? headerRow : grid.slice(0, HEADER_SEARCH).findIndex(r => (r || []).some(c => normHeader(c) === 'RUTA'));
+  if (hdrRow < 0 || !grid[hdrRow]) throw new Error('No encontré la fila de encabezado (RUTA, H. DESP, ID MASTER…). Copia incluyendo el encabezado.');
 
-  const { idx, how, warnings } = locateColumns(grid[hdrRow]);
+  const { idx, how, warnings } = locateColumns(grid[hdrRow], anchored);
   const at   = (r, field) => (idx[field] === undefined ? '' : r[idx[field]]);
   const data = new Map();
   const preview = [];
@@ -145,12 +156,12 @@ export async function readStatusBook(file) {
   return XLSX.read(await file.arrayBuffer(), { type: 'array' });
 }
 
-/** Grid de una hoja, alineado a la columna A (aunque el rango de la hoja empiece después). */
+/** Grid de una hoja del STATUS (alineado a la columna A). */
 export function statusSheetGrid(book, sheetName) {
-  const ws = book.Sheets[sheetName];
-  if (!ws || !ws['!ref']) return [];
-  const range = XLSX.utils.decode_range(ws['!ref']);
-  range.s.c = 0;
-  range.s.r = 0;
-  return XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '', range });
+  return gridFromA1(book.Sheets[sheetName]);
+}
+
+/** Hoja del archivo → datos por POSICIÓN PURA (encabezado en la fila 5, columnas desde A). */
+export function parseStatusSheet(book, sheetName, fecha) {
+  return parseStatusGrid(statusSheetGrid(book, sheetName), { fecha, headerRow: DESP_HEADER_ROW });
 }

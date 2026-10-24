@@ -153,14 +153,27 @@ export const DATETIME_COLS = new Set(['HORA DE FACTURACION','HR. DESPACHO',
   'SALIDA DE CASETA ','CITA','SOLICITUD DE ENRAMPE','ENRAMPE','RETIRO']);
 
 /**
- * Status de despacho (hoja `dd-mm-aaaa` del STATUS mensual): columnas FIJAS
- * por posición (0 = A), encabezado en la fila 5 — igual en las 23 hojas de
- * oct-2026. Por nombre se confundían STATUS WTMS (Z) con USUARIO WTMS (AH) y
- * las dos "SALIDA" (AB programada / AF caseta). `header` NO elige la columna:
- * solo verifica que la plantilla no se haya movido (y sirve de respaldo por
- * nombre EXACTO si se pegan columnas sueltas). El título de AF varía por día
- * (SALIDA CASETA / SALIDA / HORA SALIDA / vacío), por eso acepta vacío.
+ * Ruteo crudo (hoja RUTEO NUEVO del ESTATUS RUTAS): columnas FIJAS por
+ * posición (0 = A), encabezado en la fila 1 — idéntico el 20-10 y el 22-10.
+ * Un título mal escrito ya no "esconde" la columna (pasó con los remolques):
+ * se usa igual y solo genera aviso. La clave es el título esperado.
  */
+export const RUTEO_COLS = {
+  CORTINA: 0, 'TIF/FITO': 1, LLEGA: 2, 'CONGE/REFRI': 3, RUTA: 4, UNIDAD: 5, DETTE: 7,
+  CAJAS: 11, SETEO: 16, SOLICITUD: 22, FORMADO: 23, ENRAMPE: 24, 'T.E.': 25, RETIRO: 26,
+  'T.R.': 27, CASETA: 28
+};
+
+/**
+ * Status de despacho (hoja `dd-mm-aaaa` del STATUS mensual): columnas FIJAS
+ * por posición (0 = A), encabezado en la fila 5 (DESP_HEADER_ROW) — igual en
+ * las 23 hojas de oct-2026. Por nombre se confundían STATUS WTMS (Z) con USUARIO WTMS (AH) y
+ * las dos "SALIDA" (AB programada / AF caseta). `header` NO elige la columna:
+ * solo genera aviso si el título cambió (y sirve para buscar por nombre
+ * EXACTO únicamente cuando se pegan columnas sueltas). El título de AF varía
+ * por día (SALIDA CASETA / SALIDA / HORA SALIDA / vacío), por eso acepta vacío.
+ */
+export const DESP_HEADER_ROW = 4;   // fila 5 (0-based)
 export const DESP_COLS = {
   ruta:   { col: 1,  label: 'RUTA',            header: /^RUTA$/ },
   hrDesp: { col: 20, label: 'H. DESP',         header: /^H\.? ?DESP/ },

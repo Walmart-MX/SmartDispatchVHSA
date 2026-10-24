@@ -63,6 +63,7 @@
 import { SHEET_RUTEO, SHEET_FACTURAS, MODE_MACRO, MODE_SIN_MACRO } from '../core/constants.js';
 import { formatFactDate } from '../utils/format.js';
 import { isRuteoStatusHeader, flattenRuteoStatus, resolveFecha } from './ruteo-status.js';
+import { gridFromA1 } from '../utils/sheet.js';
 
 /**
  * Formato CRUDO de ESTATUS RUTAS → filas planas. Se relee el libro SIN
@@ -73,15 +74,18 @@ import { isRuteoStatusHeader, flattenRuteoStatus, resolveFecha } from './ruteo-s
  */
 function readStatusWorkbook(buf, sheetName, fileName) {
   const wb   = XLSX.read(buf, { type: 'array' });
-  const grid = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, raw: true, defval: '' });
+  const grid = gridFromA1(wb.Sheets[sheetName]);   // columnas FIJAS: el índice 0 tiene que ser la A
   const { date, fromName } = resolveFecha(fileName);
-  const { rows } = flattenRuteoStatus(grid, { fecha: date });
+  const { rows, warnings } = flattenRuteoStatus(grid, { fecha: date });
   if (!rows.length) {
     throw new Error('El ESTATUS RUTAS no trae entregas (filas con DETTE y CAJAS) — verifica el archivo.');
   }
+  // Título cambiado = se usó la columna por posición igual; solo se avisa.
+  if (warnings.length) console.warn('[Ruteo] títulos distintos (se leyeron por posición):', warnings);
+  const aviso = warnings.length ? ` · \u26A0 título distinto en ${warnings.map(w => w.split(' ')[0]).join(', ')} (leído por posición)` : '';
   const p = n => String(n).padStart(2, '0');
   const fechaTxt = `${p(date.getDate())}/${p(date.getMonth() + 1)}/${date.getFullYear()}${fromName ? '' : ' (hoy)'}`;
-  return { rows, factData: null, ruteoName: sheetName, factSheetLabel: `ESTATUS RUTAS · ${fechaTxt}` };
+  return { rows, factData: null, ruteoName: sheetName, factSheetLabel: `ESTATUS RUTAS · ${fechaTxt}${aviso}` };
 }
 
 /**
@@ -115,7 +119,7 @@ export async function processXLS(file, { mode } = {}) {
   // Formato CRUDO de ESTATUS RUTAS (sin macro) — ver nota de cabecera. Cada
   // modo acepta SOLO su formato: subir el archivo equivocado se avisa aquí,
   // antes de asignar nada al State.
-  const rawHeader = XLSX.utils.sheet_to_json(wsRuteo, { header: 1 })[0] || [];
+  const rawHeader = gridFromA1(wsRuteo)[0] || [];
   const isRaw = isRuteoStatusHeader(rawHeader);
   if (mode === MODE_SIN_MACRO && !isRaw) {
     throw new Error('Este archivo no es el ESTATUS RUTAS crudo (hoja RUTEO NUEVO con CORTINA / LLEGA / CONGE-REFRI…). Si es el Excel que ya pasó por la macro, cambia a Modo macro.');

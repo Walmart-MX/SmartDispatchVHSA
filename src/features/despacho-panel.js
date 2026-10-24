@@ -18,7 +18,7 @@
 import { State } from '../core/state.js';
 import { UI } from '../ui/ui.js';
 import {
-  processPaste, parseStatusGrid, readStatusBook, statusSheetGrid, listDaySheets, sheetForDate
+  processPaste, parseStatusSheet, readStatusBook, listDaySheets, sheetForDate
 } from '../processors/despacho.js';
 
 const IDLE_STATUS = 'Arrastra o haz clic';
@@ -93,7 +93,7 @@ export const DespachoPanel = {
     const day = sb?.days.find(d => d.name === name);
     if (!day) return;
     try {
-      const res   = parseStatusGrid(statusSheetGrid(sb.book, name), { fecha: day.date });
+      const res   = parseStatusSheet(sb.book, name, day.date);
       const fecha = fechaRuteo();
       if (fecha && fecha.getTime() !== day.date.getTime()) res.warnings.unshift(`el ruteo es del ${fmtDia(fecha)}`);
       DespachoPanel._set(res, `hoja ${name} · ${sb.fileName}`);

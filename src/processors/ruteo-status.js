@@ -37,9 +37,16 @@
  * filas de rutas que descargan en un HUB — la usa processors/desco.js
  * (paso que antes era manual). La marca puede venir en la columna RUTA o
  * en la columna DETTE (ruta 6108 del 22-10: "FRIALSA" en DETTE).
+ *
+ * COLUMNAS FIJAS POR POSICIÓN (RUTEO_COLS, core/constants.js): el orden de
+ * la hoja nunca cambia, los títulos sí (un título mal escrito dejaba sin
+ * remolques). El título solo se compara para AVISAR y para reconocer el
+ * formato crudo (basta la mitad en su lugar, ver isRuteoStatusHeader).
  */
 import { stripAccents } from '../utils/format.js';
 import { operativeDateTime } from '../utils/date.js';
+import { colLetter } from '../utils/sheet.js';
+import { RUTEO_COLS as C } from '../core/constants.js';
 
 const norm = h => String(h ?? '').toUpperCase().replace(/[.\s]/g, '');
 const has  = v => v !== '' && v !== null && v !== undefined;
@@ -47,13 +54,19 @@ const isNum = v => typeof v === 'number' && isFinite(v);
 /** CAJAS de una entrega: número, o texto que empieza con número ("3T"). */
 const isCajas = v => isNum(v) || /^\d/.test(String(v ?? '').trim());
 
-/** Encabezados mínimos para reconocer el formato crudo (vs. el ya procesado por la macro). */
-const DETECT = ['CORTINA', 'LLEGA', 'CONGE/REFRI', 'RUTA', 'DETTE', 'CAJAS', 'SETEO', 'SOLICITUD', 'ENRAMPE', 'RETIRO'];
+/** Mínimo de títulos en su posición para reconocer el formato crudo (el ya procesado por la macro coincide en 1). */
+const RAW_MIN_MATCHES = Math.ceil(Object.keys(C).length / 2);
 
-/** ¿Esta fila de encabezado es la hoja cruda de ESTATUS RUTAS? */
+/** Títulos que no coinciden con su posición: ['F dice "REMOLQUE" (esperaba UNIDAD)']. */
+export function ruteoHeaderWarnings(headerRow) {
+  return Object.entries(C)
+    .filter(([title, i]) => norm(headerRow?.[i]) !== norm(title))
+    .map(([title, i]) => `${colLetter(i)} dice "${String(headerRow?.[i] ?? '').trim()}" (esperaba ${title})`);
+}
+
+/** ¿Esta fila de encabezado es la hoja cruda de ESTATUS RUTAS? (tolera títulos cambiados) */
 export function isRuteoStatusHeader(headerRow) {
-  const set = new Set((headerRow || []).map(norm));
-  return DETECT.every(h => set.has(norm(h)));
+  return Object.keys(C).length - ruteoHeaderWarnings(headerRow).length >= RAW_MIN_MATCHES;
 }
 
 /**
@@ -98,8 +111,8 @@ function hubMarker(v) {
 }
 
 /** Agrupa las filas en rutas: [{ head, next, body, hub }]. @private */
-function groupRoutes(grid, headerIdx, c) {
-  const isHeader = r => has(r[c.CORTINA]) || (isNum(r[c.RUTA]) && String(r[c.RUTA]).length === 4 && has(r[c['CONGE/REFRI']]));
+function groupRoutes(grid, headerIdx) {
+  const isHeader = r => has(r[C.CORTINA]) || (isNum(r[C.RUTA]) && String(r[C.RUTA]).length === 4 && has(r[C['CONGE/REFRI']]));
   const groups = [];
   let cur = null;
   for (let i = headerIdx + 1; i < grid.length; i++) {
@@ -107,60 +120,57 @@ function groupRoutes(grid, headerIdx, c) {
     if (isHeader(r)) groups.push(cur = { head: r, next: grid[i + 1], body: [], hub: null });
     if (!cur) continue;
     cur.body.push(r);
-    cur.hub ||= hubMarker(r[c.RUTA]) || hubMarker(r[c.DETTE]);
+    cur.hub ||= hubMarker(r[C.RUTA]) || hubMarker(r[C.DETTE]);
   }
   return groups;
 }
 
 /**
- * @param {Array<Array>} grid   matriz de la hoja (incluye encabezado)
+ * @param {Array<Array>} grid   matriz de la hoja alineada a la columna A (incluye encabezado)
  * @param {{fecha: Date}} opts
- * @returns {{rows: Array<object>, rutas: number}}
+ * @returns {{rows: Array<object>, rutas: number, warnings: string[]}} warnings = títulos cambiados
  * @throws {Error} si el encabezado no es el formato crudo
  */
 export function flattenRuteoStatus(grid, { fecha }) {
   const headerIdx = grid.findIndex(isRuteoStatusHeader);
-  if (headerIdx < 0) throw new Error('La hoja no tiene el formato de ESTATUS RUTAS (CORTINA / LLEGA / CONGE-REFRI / RUTA / DETTE…).');
-  const c = {};
-  grid[headerIdx].forEach((h, i) => { const k = norm(h); if (k && !(k in c)) c[k] = i; });
-  const col = k => c[norm(k)];
-  const C = { CORTINA: col('CORTINA'), RUTA: col('RUTA'), DETTE: col('DETTE'), 'CONGE/REFRI': col('CONGE/REFRI') };
+  if (headerIdx < 0) throw new Error('La hoja no tiene el orden de ESTATUS RUTAS (A CORTINA · E RUTA · H DETTE · L CAJAS…).');
+  const warnings = ruteoHeaderWarnings(grid[headerIdx]);
 
   const fechaDMY = { dd: fecha.getDate(), mm: fecha.getMonth() + 1, yyyy: fecha.getFullYear() };
   const out = [];
-  const groups = groupRoutes(grid, headerIdx, C);
+  const groups = groupRoutes(grid, headerIdx);
 
   for (const g of groups) {
     const h = g.head;
     const tractorRaw = g.next && !has(g.next[C.CORTINA]) ? g.next[C.RUTA] : '';
-    const unidad  = h[col('UNIDAD')];
-    const tifFito = h[col('TIF/FITO')];
+    const unidad  = h[C.UNIDAD];
+    const tifFito = h[C['TIF/FITO']];
     const base = {
       RUTA: h[C.RUTA],
-      SETEO: mapSeteo(h[col('SETEO')], tifFito),
+      SETEO: mapSeteo(h[C.SETEO], tifFito),
       TRACTOR: has(tractorRaw) ? tractorRaw : unidad,
       UNIDAD: unidad,
       CORTINA: h[C.CORTINA],
-      LLEGADA: adjustedTime(fecha, h[col('LLEGA')]),
-      'T.E': h[col('T.E.')],
-      'T.R': h[col('T.R.')],
-      SOLICITUD: adjustedTime(fecha, h[col('SOLICITUD')]),
-      FORMADO: adjustedTime(fecha, h[col('FORMADO')]),
-      ENRAMPE: adjustedTime(fecha, h[col('ENRAMPE')]),
-      RETIRO: adjustedTime(fecha, h[col('RETIRO')]),
-      CASETA: adjustedTime(fecha, h[col('CASETA')]),
+      LLEGADA: adjustedTime(fecha, h[C.LLEGA]),
+      'T.E': h[C['T.E.']],
+      'T.R': h[C['T.R.']],
+      SOLICITUD: adjustedTime(fecha, h[C.SOLICITUD]),
+      FORMADO: adjustedTime(fecha, h[C.FORMADO]),
+      ENRAMPE: adjustedTime(fecha, h[C.ENRAMPE]),
+      RETIRO: adjustedTime(fecha, h[C.RETIRO]),
+      CASETA: adjustedTime(fecha, h[C.CASETA]),
       'TIF/FITO': tifFito
     };
-    const entregas = g.body.filter(r => isNum(r[col('DETTE')]) && isCajas(r[col('CAJAS')]));
+    const entregas = g.body.filter(r => isNum(r[C.DETTE]) && isCajas(r[C.CAJAS]));
     entregas.forEach((r, i) => {
       const last = i === entregas.length - 1;
       const n = i + 1;
       out.push({
-        FECHA: new Date(fecha), DETTE: r[col('DETTE')], CAJAS: r[col('CAJAS')],
+        FECHA: new Date(fecha), DETTE: r[C.DETTE], CAJAS: r[C.CAJAS],
         ENT1: n === 1 ? 'ENT1' : (last ? `${n}U` : n),
         ...base, _FECHA_DMY: { ...fechaDMY }, ...(g.hub ? { _HUB_MARCA: g.hub } : {})
       });
     });
   }
-  return { rows: out, rutas: groups.length };
+  return { rows: out, rutas: groups.length, warnings };
 }
