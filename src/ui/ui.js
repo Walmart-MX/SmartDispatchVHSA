@@ -699,19 +699,13 @@ showAuthFull() {
     document.getElementById('errLogInner').textContent = '';
   },
 
-  // ── Paste preview (Status de despacho) ──
+  // ── Preview del Status de despacho (features/despacho-panel.js) ──
   renderPastePreview(preview, idx) {
-    const cols = ['RUTA'];
-    if (idx.caseta !== undefined) cols.push('SALIDA CASETA');
-    if (idx.wtms   !== undefined) cols.push('USUARIO WTMS');
-    if (idx.idIda  !== undefined) cols.push('ID IDA');
-    document.getElementById('ppHead').innerHTML = '<tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr>';
-    document.getElementById('ppBody').innerHTML = preview.map(r => '<tr>' +
-      [`<td>${escH(r.ruta)}</td>`,
-       idx.caseta!==undefined?`<td>${escH(r.caseta)}</td>`:'',
-       idx.wtms  !==undefined?`<td>${escH(r.wtms)}</td>`:'',
-       idx.idIda !==undefined?`<td>${escH(r.idIda)}</td>`:''].join('') +
-    '</tr>').join('');
+    const cols = [['ruta', 'RUTA'], ['hrDesp', 'H. DESP'], ['caseta', 'SALIDA CASETA'], ['wtms', 'USUARIO WTMS'], ['idIda', 'ID MASTER']]
+      .filter(([k]) => idx[k] !== undefined);
+    document.getElementById('ppHead').innerHTML = '<tr>' + cols.map(([, label]) => `<th>${label}</th>`).join('') + '</tr>';
+    document.getElementById('ppBody').innerHTML = preview.map(r =>
+      '<tr>' + cols.map(([k]) => `<td>${escH(r[k])}</td>`).join('') + '</tr>').join('');
     document.getElementById('pastePreview').classList.add('on');
   },
   setPasteSt(msg, cls) {
@@ -2000,7 +1994,9 @@ showAuthFull() {
     State.xlsSource = null;
     State.xlsLabel  = '';
     State.factData = new Map();
-    State.despData = new Map();
+    // despData / statusBook y la tarjeta "Status de despacho": los reinicia
+    // DespachoPanel.reset() (features/despacho-panel.js), único dueño — lo
+    // llama app.js junto con este resetAll().
     State.wtmsData = new Map();   // FIX: faltaba en el reset original — bug latente desde que se agregó WTMS
     State.invoiceData = new Map(); // 5ª fuente (OBLIGATORIA) — mismo tratamiento que wtmsData, no se persiste
     State.excludedDettes = new Set();
@@ -2019,16 +2015,11 @@ showAuthFull() {
     UI.setSourceStatus('pdf',  false, 'Arrastra o haz clic', 'Todos los archivos del día a la vez');
     UI.setSourceStatus('xls',  false, 'Arrastra o haz clic', UI.xlsCardText(State.mode).sub);
     UI.setSourceStatus('wtms', false, 'Arrastra o haz clic', 'Archivo .csv');
-    UI.setSourceStatus('desp', false, 'Pega desde Excel',    'Copia RUTA · CASETA · WTMS · ID\'S MASTER');
     UI.setSourceStatus('montos', false, 'Arrastra o haz clic', 'Reporte de mainframe (monto por factura)');
     UI.setSourceProcessing('pdf',  false);
     UI.setSourceProcessing('xls',  false);
     UI.setSourceProcessing('wtms', false);
     UI.setSourceProcessing('montos', false);
-
-    document.getElementById('pasteArea').value = '';
-    document.getElementById('pasteSt').textContent = '';
-    document.getElementById('pastePreview').classList.remove('on');
 
     _tableFilter = 'all';
     _tableSearch = '';

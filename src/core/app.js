@@ -183,6 +183,7 @@ import { Auth } from '../features/auth.js';
 import { State } from './state.js';
 import { UI, _setEvents } from '../ui/ui.js';
 import { Events } from '../events/events.js';
+import { DespachoPanel } from '../features/despacho-panel.js';
 import { EditSystem, _setRoutePicker } from '../editing/edit-system.js';
 import { WarnModal, _setEvents as _setWarnModalEvents } from '../editing/warn-modal.js';
 import { RoutePicker } from '../editing/route-picker.js';
@@ -194,7 +195,7 @@ import { CitaPatternStore } from '../features/citas/cita-pattern-store.js';
 import { sampleCitaText } from '../features/citas/cita-pattern-registry.js';
 import { Autosave } from '../features/autosave.js';
 import { ConfirmDialog } from '../ui/confirm-dialog.js';
-import { loadMode } from '../features/source-mode.js';
+import { ModeModal } from '../ui/mode-modal.js';
 import { MODE_SIN_MACRO } from './constants.js';
 import { ThemeEngine } from '../theme-engine/theme-engine.js';
 import { Motion } from '../theme-engine/motion.js';
@@ -522,14 +523,30 @@ export async function init() {
  * retiran (reemplazados por el flujo de auth de arriba).
  */
 async function continueInit() {
+  // MODO MACRO / SIN MACRO (oct-2026 — ver features/source-mode.js): se
+  // pregunta en CADA apertura y ANTES de mostrar la app. Aquí solo se ABRE el
+  // modal (no toca State); la elección se APLICA más abajo, en cuanto la UI
+  // está cableada (ver modeReady). Mientras tanto <body class="mode-pending">
+  // mantiene oculto el .shell (index.html), así nunca se ve la interfaz sin
+  // modo elegido aunque la red tarde.
+  const modePicked = ModeModal.choose({ dismissible: false });
+
   Motion.wireButtonRipple(); // idempotente — ver nota en motion.js
 
   renderStepper();
   document.getElementById('btnAdmin').addEventListener('click', () => goStep('admin'));
 
-  State.factCache    = await FactCache.load();
-  State.factCacheLog = await FactCache.loadLog();
-  UI.renderCacheHistory();
+  // FactCache viene de Supabase PAGINADO (puede tardar segundos): corre en
+  // paralelo para no retrasar el modal de modo ni la app (antes era un await
+  // aquí y por eso el modal "aparecía después"). Se FUSIONA en vez de
+  // reemplazar (FactCache.save() escribe optimista en el mismo Map) y, si el
+  // operador ya cargó archivos mientras tanto, se vuelve a cruzar.
+  const factCacheReady = Promise.all([FactCache.load(), FactCache.loadLog()]).then(([cache, log]) => {
+    cache.forEach((v, k) => { if (!State.factCache.has(k)) State.factCache.set(k, v); });
+    State.factCacheLog = log;
+    UI.renderCacheHistory();
+    if (State.xlsData?.length || State.pdfData.size) Events.triggerMerge();
+  }).catch(e => console.warn('[FactCache] No se pudo cargar al arrancar:', e));
 
   Events.setupDrop('dropPDF', 'filePDF', Events.handlePDFs.bind(Events));
   // NUEVO (oct-2026 — seleccion de carpeta completa): input aparte
@@ -547,12 +564,13 @@ async function continueInit() {
   Events.setupDrop('dropXLS', 'fileXLS', Events.handleXLS.bind(Events));
   Events.setupDrop('dropWTMS', 'fileWTMS', Events.handleWTMS.bind(Events));
   Events.setupDrop('dropMONTOS', 'fileMONTOS', Events.handleInvoiceReport.bind(Events));
+  // Status de despacho: toda la tarjeta acepta arrastrar el STATUS del mes.
+  Events.setupDrop('dropDESP', 'fileDESP', files => DespachoPanel.handleFile(files));
+  DespachoPanel.wire({ onChange: () => Events.triggerMerge() });
 
-  // MODO MACRO / SIN MACRO (oct-2026 — ver features/source-mode.js): se lee la
-  // elección guardada en este equipo y se refleja en la tarjeta Excel y en el
-  // botón de Preparación. Si aún no hay elección, el modal se abre al FINAL de
-  // continueInit() (la UI ya está lista). Mientras tanto la UI muestra sin macro.
-  UI.applySourceMode(loadMode() ?? MODE_SIN_MACRO);
+  // MODO MACRO / SIN MACRO: valor de arranque de la tarjeta Excel mientras el
+  // modal (abierto al inicio de continueInit) espera la elección.
+  UI.applySourceMode(MODE_SIN_MACRO);
   document.getElementById('btnChangeMode').addEventListener('click', () => Events.chooseMode({ dismissible: true }));
 
   document.getElementById('btnGoTable').addEventListener('click', () => goStep('fix'));
@@ -581,11 +599,9 @@ async function continueInit() {
       confirmLabel: 'Reiniciar todo', danger: true
     });
     if (!ok) return;
+    DespachoPanel.reset();
     UI.resetAll();
   });
-
-  document.getElementById('btnParse').addEventListener('click',      () => Events.handlePaste());
-  document.getElementById('btnPasteClear').addEventListener('click', () => Events.clearPaste());
 
   // NUEVO (ago-2026 — validación Excel vs PDF): simple toggle de
   // visibilidad del detalle de diferencias — la tarjeta en sí ya se
@@ -1022,6 +1038,12 @@ async function continueInit() {
   UI.updateHealthRail();
   UI.applyMode();
 
+  // La UI ya está cableada y pintada: la elección de modo se aplica en cuanto
+  // llegue, SIN esperar catálogos/historial (red) — y recién ahí se revela la app.
+  const modeReady = modePicked
+    .then(mode => Events.setMode(mode))
+    .then(() => document.body.classList.remove('mode-pending'));
+
   UI.setCatStatus('Cargando catálogo…', 'ok');
   const catResult = await initCatalog();
   UI.renderCatalog();
@@ -1039,10 +1061,9 @@ async function continueInit() {
   UI.renderTodayBanner(todaySession);
   UI.applyMode();
 
-  // Primer arranque en este equipo: no se puede trabajar sin elegir modo, así
-  // que el modal NO es descartable. Va antes de la recuperación de Autosave
-  // para que, si el snapshot trae un Excel de otro modo, setMode() lo pregunte.
-  if (!State.mode) await Events.chooseMode({ dismissible: false });
+  // El modo debe estar aplicado antes de la recuperación de Autosave, para que
+  // si el snapshot trae un Excel de otro modo, setMode() lo pregunte.
+  await Promise.all([modeReady, factCacheReady]);
 
   // NUEVO — recuperación de Autosave (ver features/autosave.js). Va al
   // final de continueInit(), con todo ya pintado/cableado, para que

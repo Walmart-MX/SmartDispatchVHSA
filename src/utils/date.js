@@ -183,6 +183,42 @@ export function normDateTime(val) {
 }
 
 /**
+ * Corte del día operativo (22:00, igual que la macro): una hora suelta
+ * posterior pertenece al día ANTERIOR. Lo usan el ruteo y el Status.
+ */
+export const HORA_CORTE = 0.91666;
+
+/**
+ * Hora suelta (fracción de día 0–1) → Date en el día operativo `fecha`.
+ * @param {Date} fecha — día operativo (solo se usa la parte de fecha)
+ * @param {number} frac — fracción de día (02:33 = 0.10625)
+ * @returns {Date}
+ */
+export function operativeDateTime(fecha, frac) {
+  const f    = frac % 1;
+  const flag = f > HORA_CORTE ? 1 : 0;
+  return new Date(fecha.getFullYear(), fecha.getMonth(), fecha.getDate() - flag, 0, 0, Math.round(f * 86400));
+}
+
+/**
+ * Serial de Excel (fecha+hora, >= 1) → Date LOCAL. Se arma con el
+ * constructor local a propósito: `(v - 25569) * 86400000` da un instante
+ * UTC y en México se corre 6 h.
+ * @param {number} serial
+ * @returns {Date}
+ */
+export function excelSerialToLocal(serial) {
+  const days = Math.floor(serial);
+  return new Date(1899, 11, 30 + days, 0, 0, Math.round((serial - days) * 86400));
+}
+
+/** Date → "DD/MM/YYYY HH:MM" (formato del panel de despacho). */
+export function fmtDMYHM(d) {
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/**
  * Convierte un string normalizado (DD/MM/YYYY HH:MM) o ISO a objeto Date.
  * Devuelve null si no puede parsear.
  *

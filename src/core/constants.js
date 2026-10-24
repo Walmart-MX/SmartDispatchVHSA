@@ -152,12 +152,21 @@ export const DATE_COLS     = new Set(['FECHA']);
 export const DATETIME_COLS = new Set(['HORA DE FACTURACION','HR. DESPACHO',
   'SALIDA DE CASETA ','CITA','SOLICITUD DE ENRAMPE','ENRAMPE','RETIRO']);
 
-export const DESP_ALIASES = {
-  ruta:   /^ruta$/i,
-  hrDesp: /hr.*desp|hora.*desp|despacho|hr\.?\s*desp/i,
-  caseta: /caseta|salida.*caseta|salida/i,
-  wtms:   /wtms|usuario/i,
-  idIda:  /id.*master|master|id.*ida|id'?s?\s*master/i
+/**
+ * Status de despacho (hoja `dd-mm-aaaa` del STATUS mensual): columnas FIJAS
+ * por posición (0 = A), encabezado en la fila 5 — igual en las 23 hojas de
+ * oct-2026. Por nombre se confundían STATUS WTMS (Z) con USUARIO WTMS (AH) y
+ * las dos "SALIDA" (AB programada / AF caseta). `header` NO elige la columna:
+ * solo verifica que la plantilla no se haya movido (y sirve de respaldo por
+ * nombre EXACTO si se pegan columnas sueltas). El título de AF varía por día
+ * (SALIDA CASETA / SALIDA / HORA SALIDA / vacío), por eso acepta vacío.
+ */
+export const DESP_COLS = {
+  ruta:   { col: 1,  label: 'RUTA',            header: /^RUTA$/ },
+  hrDesp: { col: 20, label: 'H. DESP',         header: /^H\.? ?DESP/ },
+  idIda:  { col: 22, label: 'ID MASTER',       header: /^ID'?S? MASTER$/ },
+  caseta: { col: 31, label: 'SALIDA (caseta)', header: /^((HORA )?SALIDA( CASETA)?)?$/ },
+  wtms:   { col: 33, label: 'USUARIO WTMS',    header: /^USUARIO WTMS$/ }
 };
 
 /**

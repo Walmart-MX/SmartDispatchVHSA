@@ -69,6 +69,17 @@
  *   2) ID IDA / ID RETORNO / CARTA PORTE — parte de INT_COLS, número real.
  *   3) Columnas de tiempo con datos faltantes — resaltado ámbar.
  *
+ * FIX (oct-2026 — horas del archivo final 6 h adelantadas):
+ *   ExcelJS escribe un Date como su INSTANTE UTC, no como la hora local
+ *   que se ve en la app: en México (UTC-6) un despacho de las 02:33 salía
+ *   como 08:33 en TODAS las columnas de fecha/hora (ruteo, PDF, despacho),
+ *   en ambos modos. Verificado con el ExcelJS de vendor/ y el ruteo real
+ *   del 22-10 (RETIRO 03:33 → exportaba 09:33). _toExcelWallClock()
+ *   reconstruye la misma hora de pared en UTC antes de escribir — único
+ *   punto de conversión. Segundos fijos en :30 (misma convención que
+ *   parseDateTime): nunca se trunca al minuto anterior al leerlo en Excel
+ *   y de paso desaparece el ruido de +36 s que mete SheetJS al leer.
+ *
  * CAMBIO (oct-2026 — banner de secciones): una fila 1 fusionada arriba
  * del encabezado real (que vive en la fila 2) con el nombre de cada
  * sección visual (ver SECTION_BANNERS). Hoy solo existe la sección
@@ -197,6 +208,17 @@ function _buildFechaTexto(val) {
   return String(val ?? '');
 }
 
+/**
+ * Date local → Date cuya hora UTC es la hora de pared local, que es lo que
+ * ExcelJS termina escribiendo en la celda (ver nota de cabecera "FIX —
+ * horas 6 h adelantadas"). @private
+ * @param {Date} d
+ * @returns {Date}
+ */
+function _toExcelWallClock(d) {
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), 30));
+}
+
 /** Largo visible aproximado de un valor de celda — para autoajustar anchos. @private */
 function _displayLen(v) {
   if (v instanceof Date) return 16; // DD/MM/YYYY HH:MM
@@ -254,15 +276,17 @@ export async function exportXLSX(rows, exportType, sessionDate) {
       return _buildFechaTexto(val);
     }
     if (DATETIME_COLS.has(col)) {
-      if (val instanceof Date && !isNaN(val.getTime())) return val;
-      const d = parseDateTime(String(val));
-      return d ? d : val;
+      const d = val instanceof Date ? val : parseDateTime(String(val));
+      return d && !isNaN(d.getTime()) ? _toExcelWallClock(d) : val;
     }
     if (INT_COLS.has(col)) {
       const s = String(val).trim();
       // Un marchamo con cero inicial ("012345") se conserva como TEXTO —
       // parseInt lo convertiría en 12345 y perdería el cero.
       if (MARCHAMO_COLS.has(col) && /^0\d+$/.test(s)) return s;
+      // CAJAS con letras ("3T" = 3 tarimas movidas, viene así del ruteo) se
+      // conserva como TEXTO — parseInt lo dejaría en 3 y se pierde la T.
+      if (col === 'CAJAS' && /[A-Z]/i.test(s)) return s;
       const n = parseInt(s.replace(/[^\d]/g,''), 10);
       return isNaN(n) ? val : n;
     }

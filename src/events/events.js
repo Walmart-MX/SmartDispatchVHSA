@@ -141,7 +141,7 @@
  *   runMerge() ya es un no-op seguro en ese caso porque State.xlsData
  *   es null.
  *
- *   handlePDFs/handleXLS/handleWTMS/handlePaste limpian
+ *   handlePDFs/handleXLS/handleWTMS (y DespachoPanel._set) limpian
  *   State.reviewSessionId al inicio — cargar cualquier fuente cruda
  *   nueva saca a la app del modo revisión y la regresa al flujo normal
  *   de captura, evitando quedar en un estado híbrido confuso.
@@ -214,11 +214,11 @@ import { Autosave } from '../features/autosave.js';
 import { pdfExtract, parsePDF } from '../processors/pdf.js';
 import { detectTipoCarga, clasificarTipoCarga } from '../processors/pdf-trip-type.js';
 import { processXLS } from '../processors/excel.js';
-import { processPaste } from '../processors/paste.js';
+import { DespachoPanel } from '../features/despacho-panel.js';
 import { processWTMS } from '../processors/wtms.js';
 import { processInvoiceReport } from '../processors/invoice-report.js';
-import { applyDesco } from '../processors/desco.js';
-import { saveMode } from '../features/source-mode.js';
+import { applyDesco, dropSinPdf } from '../processors/desco.js';
+import { setSourceMode } from '../features/source-mode.js';
 import { MODE_SIN_MACRO } from '../core/constants.js';
 import { ModeModal } from '../ui/mode-modal.js';
 import { ConfirmDialog } from '../ui/confirm-dialog.js';
@@ -496,6 +496,7 @@ export const Events = {
 
       UI.hideProgress();
       Events.triggerMerge();
+      DespachoPanel.onRuteoLoaded();   // si ya subieron el STATUS, toma la hoja de este día
     } catch (e) {
       UI.hideProgress();
       UI.showErrors([e.message]);
@@ -531,7 +532,7 @@ export const Events = {
     }
     State.xlsData = null; State.xlsSource = null; State.xlsLabel = '';
     State.factData = new Map();
-    saveMode(mode);
+    setSourceMode(mode);
     UI.applySourceMode(mode);
     UI.setSourceStatus('xls', false, 'Arrastra o haz clic', UI.xlsCardText(mode).sub);
     Events.triggerMerge();
@@ -594,33 +595,6 @@ export const Events = {
     }
   },
 
-  handlePaste() {
-    const raw = document.getElementById('pasteArea').value.trim();
-    if (!raw) { UI.setPasteSt('Pega datos primero', 'err'); return; }
-    // NUEVO (ago-2026 — "reabrir para corregir"): ver nota de cabecera.
-    State.reviewSessionId = null;
-    UI.setPasteSt('Procesando…', 'proc');
-    try {
-      const { data, preview, idx } = processPaste(raw);
-      State.despData = data;
-      UI.setPasteSt(`✓ ${data.size} rutas detectadas`, 'ok');
-      UI.setSourceStatus('desp', true, '✓ Completo', `${data.size} rutas detectadas`);
-      if (preview.length) UI.renderPastePreview(preview, idx);
-      Events.triggerMerge();
-    } catch (e) {
-      UI.setPasteSt(e.message, 'err');
-    }
-  },
-
-  clearPaste() {
-    document.getElementById('pasteArea').value = '';
-    document.getElementById('pastePreview').classList.remove('on');
-    State.despData = new Map();
-    UI.setPasteSt('', '');
-    UI.setSourceStatus('desp', false, 'Pega desde Excel', 'Copia RUTA · CASETA · WTMS · ID\'S MASTER');
-    Events.triggerMerge();
-  },
-
   // ── Validación de fuentes obligatorias ──
   checkSources() {
     const missing = [];
@@ -654,13 +628,23 @@ export const Events = {
     // xlsSource (puro e idempotente — ver processors/desco.js), así que
     // cambiar PDFs después nunca parte de un Excel ya colapsado. Tras
     // restaurar Autosave no hay xlsSource: rige xlsData (ya ajustado).
-    const { rows: xlsRows, adjusted } = applyDesco(xlsBase, State.pdfData);
+    const { rows: descoRows, adjusted } = applyDesco(xlsBase, State.pdfData);
+    // Sin macro: las entregas que no vienen en el PDF de su ruta se quitan
+    // (no viajaron en ese camión — ver dropSinPdf() en processors/desco.js).
+    const { rows: xlsRows, quitadas } = State.mode === MODE_SIN_MACRO
+      ? dropSinPdf(descoRows, State.pdfData)
+      : { rows: descoRows, quitadas: [] };
     if (State.xlsSource) State.xlsData = xlsRows;
     if (adjusted.length) {
       console.info('[DESCO] Rutas ajustadas a su HUB según el PDF:', adjusted.map(a => `${a.ruta}→${a.hub.join('+')}`).join(', '));
     }
+    if (quitadas.length) {
+      console.info('[SIN PDF] Entregas quitadas (no vienen en el PDF de su ruta):', quitadas.map(q => `${q.ruta}/${q.dette}`).join(', '));
+    }
     if (State.xlsSource) {
-      const nota = adjusted.length ? ` · ${adjusted.length} ruta${adjusted.length !== 1 ? 's' : ''} a HUB ajustada${adjusted.length !== 1 ? 's' : ''}` : '';
+      const plural = (n, s) => `${n} ${s}${n !== 1 ? 's' : ''}`;
+      const nota = (adjusted.length ? ` · ${plural(adjusted.length, 'ruta')} a HUB ajustada${adjusted.length !== 1 ? 's' : ''}` : '')
+                 + (quitadas.length ? ` · sin PDF quitada${quitadas.length !== 1 ? 's' : ''}: ${quitadas.map(q => `${q.ruta}/${q.dette}`).join(', ')}` : '');
       UI.setSourceStatus('xls', true, '\u2713 Completo', `${State.xlsData.length} rutas${State.xlsLabel.replace(/^\d+ rutas/, '')}${nota}`);
     }
 

@@ -14,8 +14,11 @@
  * REGLAS (extraídas del VBA, no supuestas):
  *   - Datos de RUTA (cortina, unidad, setéo, horas, T.E/T.R, TIF/FITO)
  *     viven SOLO en la fila-encabezado y se repiten en cada entrega.
- *   - Entrega = fila con DETTE numérico y CAJAS numérico (las filas
- *     "ENTREGA A TIENDA", separadores y marcas sueltas se descartan).
+ *   - Entrega = fila con DETTE numérico y CAJAS que empieza con número
+ *     (las filas "ENTREGA A TIENDA", separadores y marcas sueltas se
+ *     descartan). CAJAS con texto ("3T" = 3 tarimas movidas por sistema,
+ *     ej. ruta 6307/4914 del 22-10) se CONSERVA tal cual — el equipo
+ *     necesita verlo así (la macro lo convertía en 3 con Val()).
  *   - TRACTOR = valor de la columna RUTA en la fila SIGUIENTE al
  *     encabezado; si está vacío, se usa la UNIDAD.
  *   - Horas (LLEGADA/SOLICITUD/FORMADO/ENRAMPE/RETIRO/CASETA):
@@ -32,14 +35,17 @@
  *
  * Marca `_HUB_MARCA` ("DESCO MERIDA", "DESCO TUXTLA", "FRIALSA") en las
  * filas de rutas que descargan en un HUB — la usa processors/desco.js
- * (paso que antes era manual).
+ * (paso que antes era manual). La marca puede venir en la columna RUTA o
+ * en la columna DETTE (ruta 6108 del 22-10: "FRIALSA" en DETTE).
  */
 import { stripAccents } from '../utils/format.js';
+import { operativeDateTime } from '../utils/date.js';
 
 const norm = h => String(h ?? '').toUpperCase().replace(/[.\s]/g, '');
 const has  = v => v !== '' && v !== null && v !== undefined;
 const isNum = v => typeof v === 'number' && isFinite(v);
-const HORA_CORTE = 0.91666; // 22:00 — igual que la macro
+/** CAJAS de una entrega: número, o texto que empieza con número ("3T"). */
+const isCajas = v => isNum(v) || /^\d/.test(String(v ?? '').trim());
 
 /** Encabezados mínimos para reconocer el formato crudo (vs. el ya procesado por la macro). */
 const DETECT = ['CORTINA', 'LLEGA', 'CONGE/REFRI', 'RUTA', 'DETTE', 'CAJAS', 'SETEO', 'SOLICITUD', 'ENRAMPE', 'RETIRO'];
@@ -65,11 +71,9 @@ export function resolveFecha(fileName, now = new Date()) {
   return { date: new Date(now.getFullYear(), now.getMonth(), now.getDate()), fromName: false };
 }
 
-/** Hora (fracción de día) → Date ajustado por cruce de medianoche. */
+/** Hora (fracción de día) → Date ajustado por cruce de medianoche (regla en utils/date.js). */
 function adjustedTime(fecha, v) {
-  const frac = isNum(v) ? (v % 1) : 0;
-  const flag = frac > HORA_CORTE ? 1 : 0;
-  return new Date(fecha.getFullYear(), fecha.getMonth(), fecha.getDate() - flag, 0, 0, Math.round(frac * 86400));
+  return operativeDateTime(fecha, isNum(v) ? v : 0);
 }
 
 function mapSeteo(seteo, tifFito) {
@@ -84,7 +88,7 @@ function mapSeteo(seteo, tifFito) {
 }
 
 /**
- * Marca de HUB en la columna RUTA de una fila ("DESCO MÉRIDA" → "DESCO MERIDA",
+ * Marca de HUB en una celda ("DESCO MÉRIDA" → "DESCO MERIDA",
  * "FRIALSA" → "FRIALSA"); null si la celda no es una marca.
  * @private
  */
@@ -103,7 +107,7 @@ function groupRoutes(grid, headerIdx, c) {
     if (isHeader(r)) groups.push(cur = { head: r, next: grid[i + 1], body: [], hub: null });
     if (!cur) continue;
     cur.body.push(r);
-    cur.hub ||= hubMarker(r[c.RUTA]);
+    cur.hub ||= hubMarker(r[c.RUTA]) || hubMarker(r[c.DETTE]);
   }
   return groups;
 }
@@ -120,7 +124,7 @@ export function flattenRuteoStatus(grid, { fecha }) {
   const c = {};
   grid[headerIdx].forEach((h, i) => { const k = norm(h); if (k && !(k in c)) c[k] = i; });
   const col = k => c[norm(k)];
-  const C = { CORTINA: col('CORTINA'), RUTA: col('RUTA'), 'CONGE/REFRI': col('CONGE/REFRI') };
+  const C = { CORTINA: col('CORTINA'), RUTA: col('RUTA'), DETTE: col('DETTE'), 'CONGE/REFRI': col('CONGE/REFRI') };
 
   const fechaDMY = { dd: fecha.getDate(), mm: fecha.getMonth() + 1, yyyy: fecha.getFullYear() };
   const out = [];
@@ -147,7 +151,7 @@ export function flattenRuteoStatus(grid, { fecha }) {
       CASETA: adjustedTime(fecha, h[col('CASETA')]),
       'TIF/FITO': tifFito
     };
-    const entregas = g.body.filter(r => isNum(r[col('DETTE')]) && isNum(r[col('CAJAS')]));
+    const entregas = g.body.filter(r => isNum(r[col('DETTE')]) && isCajas(r[col('CAJAS')]));
     entregas.forEach((r, i) => {
       const last = i === entregas.length - 1;
       const n = i + 1;

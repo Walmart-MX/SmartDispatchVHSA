@@ -6,7 +6,7 @@
  * processors/invoice-report.js) y produce State.merged: el array que
  * alimenta la tabla, el SVE y la exportación.
  *
- * A diferencia de pdf.js / excel.js / paste.js, esta función NO es pura:
+ * A diferencia de pdf.js / excel.js / despacho.js, esta función NO es pura:
  * lee State.xlsData, State.pdfData, State.factData, State.despData,
  * State.catalog, State.catalogs, State.wtmsData, State.excludedDettes
  * directamente, y escribe el resultado en State.merged. Es intencional

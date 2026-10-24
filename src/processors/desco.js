@@ -26,6 +26,13 @@
  * El PDF es la verdad física (qué se cargó y a dónde va), por eso guía
  * la regla — no hay tabla plaza→HUB que mantener.
  *
+ * ENTREGAS SIN PDF (oct-2026, decisión de Eduardo — dropSinPdf()): tras el
+ * paso HUB, una fila de Excel cuyo DETTE no viene en el PDF de SU ruta (PDF
+ * cargado) se QUITA: no viajó en ese camión. Caso real 22-10: 6123/2062,
+ * "se quedan 2 tarimas por ocupación de 2062 en ruta 6216". Rutas sin PDF
+ * cargado no se tocan (no hay contra qué comparar). Solo modo sin macro —
+ * en modo macro el Excel ya viene curado y rige el aviso dette_sin_pdf.
+ *
  * PURO e IDEMPOTENTE: no muta `xlsRows`; devuelve la MISMA referencia
  * si no hay nada que ajustar. Se invoca desde Events.triggerMerge()
  * sobre State.xlsSource, de modo que cambiar los PDFs después siempre
@@ -60,6 +67,18 @@ function renumberEnt(rows) {
   }));
 }
 
+/** Parte las filas en bloques contiguos por RUTA, en orden: Array<[ruta, filas]>. @private */
+function groupByRuta(rows) {
+  const groups = [];
+  for (const r of rows) {
+    const ruta = str(r[COL_RUTA]);
+    const last = groups[groups.length - 1];
+    if (last && last[0] === ruta) last[1].push(r);
+    else groups.push([ruta, [r]]);
+  }
+  return groups;
+}
+
 /**
  * @param {Array<object>} xlsRows  filas de RUTEO NUEVO (State.xlsSource)
  * @param {Map<string,object>} pdfData  State.pdfData
@@ -76,15 +95,8 @@ export function applyDesco(xlsRows, pdfData) {
   const pdfDest = pdfDestinosByRuta(pdfData);
   const result = [];
   const adjusted = [];
-  let i = 0;
 
-  while (i < xlsRows.length) {
-    const ruta = str(xlsRows[i][COL_RUTA]);
-    let j = i;
-    while (j < xlsRows.length && str(xlsRows[j][COL_RUTA]) === ruta) j++;
-    const group = xlsRows.slice(i, j);
-    i = j;
-
+  for (const [ruta, group] of groupByRuta(xlsRows)) {
     const pdfList = pdfDest.get(ruta);
     if (!group.some(r => r._HUB_MARCA) || !pdfList) { result.push(...group); continue; }
 
@@ -113,4 +125,31 @@ export function applyDesco(xlsRows, pdfData) {
     });
   }
   return adjusted.length ? { rows: result, adjusted } : none;
+}
+
+/**
+ * Quita las entregas que no vienen en el PDF de su ruta (ver nota de
+ * cabecera "ENTREGAS SIN PDF"). Correr DESPUÉS de applyDesco(). PURO:
+ * devuelve la MISMA referencia si no quita nada.
+ * @param {Array<object>} xlsRows
+ * @param {Map<string,object>} pdfData  State.pdfData
+ * @returns {{rows: Array<object>, quitadas: Array<{ruta:string, dette:string}>}}
+ */
+export function dropSinPdf(xlsRows, pdfData) {
+  const none = { rows: xlsRows, quitadas: [] };
+  if (!xlsRows?.length || !pdfData?.size) return none;
+
+  const pdfDest = pdfDestinosByRuta(pdfData);
+  const result = [];
+  const quitadas = [];
+  for (const [ruta, group] of groupByRuta(xlsRows)) {
+    const pdfSet = new Set(pdfDest.get(ruta) || []);
+    const kept = pdfSet.size ? group.filter(r => pdfSet.has(str(r[COL_DETTE_E]))) : group;
+    // Nunca vacía una ruta completa: si NADA coincide, el problema es de
+    // lectura del PDF / ruta mal asignada — que lo vea el SVE, no se borra.
+    if (kept.length === group.length || !kept.length) { result.push(...group); continue; }
+    group.filter(r => !kept.includes(r)).forEach(r => quitadas.push({ ruta, dette: str(r[COL_DETTE_E]) }));
+    result.push(...renumberEnt(kept));
+  }
+  return quitadas.length ? { rows: result, quitadas } : none;
 }

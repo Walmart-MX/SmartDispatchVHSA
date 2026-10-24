@@ -129,6 +129,10 @@ button{cursor:pointer;border:none;background:none}
    que ocultar .shell no afecta en nada su propia lógica de
    mostrar/ocultar. Puramente visual — no toca features/auth.js. */
 body:not(.app-authed) .shell{display:none!important}
+/* MODO DE CARGA (oct-2026): el .shell tampoco se ve hasta elegir modo — la
+   clase la quita core/app.js (continueInit → modeReady). El modal es hermano
+   del .shell, así que sigue visible encima del fondo ambiental. */
+body.mode-pending .shell{visibility:hidden}
 
 /* ── SHELL ── (position:relative;z-index:1 NUEVO — Dynamic Experience: mantiene el contenido siempre encima de #ambientHost) */
 .shell{display:flex;flex-direction:column;min-height:100vh;position:relative;z-index:1}
@@ -311,6 +315,24 @@ body:not(.app-authed) .shell{display:none!important}
 .paste-status.ok{color:var(--green)}
 .paste-status.err{color:var(--red)}
 .paste-status.proc{color:var(--amber-ink)}
+.paste-status.warn{color:var(--amber-ink)}
+/* Status de despacho: archivo (principal) + día + pegado manual (plegado) */
+.desp-file{
+  position:relative;border:1.5px dashed var(--border-2);border-radius:var(--r);padding:14px;
+  text-align:center;font-size:11px;color:var(--text-2);transition:all .15s;
+}
+.desp-file input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
+.desp-file:hover,.up-card-paste.drag .desp-file{border-color:var(--brand-accent);background:var(--amber-soft)}
+.desp-file:focus-within{outline:2px solid var(--brand-accent);outline-offset:2px}
+.desp-sheet{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:11px;font-weight:600}
+.desp-sheet[hidden]{display:none}
+.desp-sheet select{
+  font:inherit;font-family:var(--mono);padding:4px 8px;border:1.5px solid var(--border-2);
+  border-radius:var(--r);background:var(--surface-2);color:var(--text);
+}
+.desp-manual{margin-top:10px}
+.desp-manual summary{cursor:pointer;font-size:11px;font-weight:600;color:var(--text-2)}
+.desp-manual[open] summary{margin-bottom:8px}
 .paste-preview{margin-top:8px;overflow-x:auto;max-height:90px;border:1px solid var(--border);border-radius:var(--r);display:none}
 .paste-preview.on{display:block}
 .paste-preview table{font-family:var(--mono);font-size:9px;border-collapse:collapse;width:100%}
@@ -946,7 +968,7 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
 }
 </style>
 </head>
-<body>
+<body class="mode-pending">
 
 <!-- Dynamic Experience — host ambiental (vacío en Fase 1). Fixed,
      z-index:0, pointer-events:none — nunca intercepta clics ni tapa
@@ -1167,25 +1189,40 @@ table.dtbl{width:100%;border-collapse:collapse;font-size:12px}
 
         <div class="up-card up-card-paste" id="dropDESP">
           <div class="up-card-paste-hd">
-            <div class="up-ico">📋</div>
+            <div class="up-ico">&#128203;</div>
             <div>
               <div class="up-title">Status de despacho</div>
-              <div class="up-sub" id="despSub">Copia RUTA · SALIDA CASETA · USUARIO WTMS · ID'S MASTER desde Excel</div>
+              <div class="up-sub" id="despSub">Sube el STATUS del mes (.xlsm): toma la hoja del día del ruteo</div>
             </div>
-            <div class="up-status" id="despStatus">Pega desde Excel</div>
+            <div class="up-status" id="despStatus">Arrastra o haz clic</div>
           </div>
-          <div class="paste-cols">
-            <span class="pcol pcol-key">RUTA</span>
-            <span class="pcol pcol-val">CASETA</span>
-            <span class="pcol pcol-val">WTMS</span>
-            <span class="pcol pcol-val">ID'S MASTER</span>
+          <!-- Columnas FIJAS por posición (DESP_COLS en core/constants.js) -->
+          <div class="paste-cols" aria-label="Columnas que se leen del Status">
+            <span class="pcol pcol-key">B · RUTA</span>
+            <span class="pcol pcol-val">U · H. DESP</span>
+            <span class="pcol pcol-val">W · ID MASTER</span>
+            <span class="pcol pcol-val">AF · SALIDA (caseta)</span>
+            <span class="pcol pcol-val">AH · USUARIO WTMS</span>
           </div>
-          <textarea class="paste-ta" id="pasteArea" placeholder="Ctrl+C en Excel → Ctrl+V aquí"></textarea>
+          <div class="desp-file">
+            <input type="file" id="fileDESP" accept=".xlsm,.xlsx,.xls" aria-label="Subir el STATUS de despacho del mes">
+            <span aria-hidden="true">&#128194;</span> <span id="despFileName">Arrastra aquí el STATUS del mes o haz clic</span>
+          </div>
+          <div class="desp-sheet" id="despSheetRow" hidden>
+            <label for="despSheet">Día operativo</label>
+            <select id="despSheet"></select>
+          </div>
+          <details class="desp-manual" id="despManual">
+            <summary>¿No tienes el archivo? Pégalo manualmente</summary>
+            <textarea class="paste-ta" id="pasteArea" aria-label="Pegar el Status desde Excel" placeholder="Copia la hoja del día desde la columna A, con el encabezado → Ctrl+V aquí"></textarea>
+            <div class="paste-actions">
+              <button class="btn btn-primary btn-sm" id="btnParse">▶ Procesar</button>
+            </div>
+          </details>
           <div class="paste-actions">
-            <button class="btn btn-primary btn-sm" id="btnParse">▶ Procesar</button>
-            <button class="btn btn-ghost btn-sm" id="btnPasteClear">✕ Limpiar</button>
+            <button class="btn btn-ghost btn-sm" id="btnPasteClear">&#10005; Limpiar</button>
           </div>
-          <div class="paste-status" id="pasteSt"></div>
+          <div class="paste-status" id="pasteSt" role="status" aria-live="polite"></div>
           <div class="paste-preview" id="pastePreview">
             <table><thead id="ppHead"></thead><tbody id="ppBody"></tbody></table>
           </div>

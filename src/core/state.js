@@ -84,8 +84,10 @@ export const State = {
   // factData: Map<invoice, {gls, horaFact}> — facturas del día: hoja CONCENTRADO FACTURAS
   // (Excel ya procesado por la macro). Vacío en modo sin macro (no hay concentrado).
   factData: new Map(),
-  // despData: Map<ruta, {hrDesp, caseta, wtms, idIda}> — panel "Status de despacho" (paste.js).
+  // despData: Map<ruta, {hrDesp, caseta, wtms, idIda}> — panel "Status de despacho" (processors/despacho.js).
   despData: new Map(),
+  // statusBook: {fileName, book, days} — STATUS mensual ya leído, para cambiar de día sin releer. No se persiste.
+  statusBook: null,
   // wtmsData: Map<idCarga, {carteporte, siguienteCarga}> — Reporte WTMS (processors/wtms.js). No se persiste.
   wtmsData: new Map(),
   // invoiceData: Map<factKey, {monto, store, load}> — 5ª fuente OBLIGATORIA: Reporte de
