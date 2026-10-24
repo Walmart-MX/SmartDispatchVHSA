@@ -35,6 +35,13 @@ queda en blanco.
 con `RUTEO NUEVO` + `CONCENTRADO FACTURAS` (GLS y hora salen del concentrado).
 **Carga**: un único `.xlsx`/`.xls`. Cada modo rechaza el archivo del otro
 modo, con un mensaje que dice qué hacer.
+**Columnas fijas por posición (sin macro)**: encabezado en la fila 1;
+`A CORTINA · B TIF/FITO · C LLEGA · D CONGE/REFRI · E RUTA · F UNIDAD ·
+H DETTE · L CAJAS · Q SETEO · W SOLICITUD · X FORMADO · Y ENRAMPE · Z T.E. ·
+AA RETIRO · AB T.R. · AC CASETA` (`RUTEO_COLS`). Si un título viene distinto,
+la columna se lee igual por su letra y la tarjeta avisa (`título distinto
+en F`). **Si alguien inserta o mueve una columna, hay que actualizar
+`RUTEO_COLS` en `src/core/constants.js`.**
 
 ## 3. Reporte WTMS
 **Qué es**: CSV exportado de WTMS con ID de la carga, Carta Porte y
@@ -43,9 +50,18 @@ descarta (ver `processors/wtms.js`).
 **Carga**: un único `.csv`.
 
 ## 4. Status de despacho
-**Qué es**: RUTA · SALIDA CASETA · USUARIO WTMS · ID'S MASTER,
-copiado directo desde Excel (Ctrl+C) y pegado en SmartDispatch
-(Ctrl+V) — no se sube como archivo.
+**Qué es**: el STATUS mensual (`10 STATUS OCTUBRE 2026.xlsm`), una hoja por
+día `dd-mm-aaaa`.
+**Carga**: se sube el archivo; se toma sola la hoja del día del ruteo (si no
+hay ruteo o falta esa hoja, se elige el día en la tarjeta). Opción manual:
+copiar la hoja del día desde la columna A, con el encabezado, y pegarla.
+**Columnas fijas por posición**: encabezado en la fila 5;
+`B RUTA · U H. DESP · W ID MASTER · AF SALIDA (caseta) · AH USUARIO WTMS`
+(`DESP_COLS`). Por nombre se confundían STATUS WTMS (Z) con USUARIO WTMS (AH)
+y las dos "SALIDA" (AB programada / AF caseta). Un título distinto solo
+genera aviso. Horas sueltas (`02:33`) se ubican en el día operativo (pasadas
+las 22:00 = día anterior); una fecha de 1900 (error de captura) se toma solo
+como hora y se avisa.
 
 ## 5. Reporte de Facturación (mainframe — "INVOICE DETAIL")
 **Qué es**: el detalle línea a línea de cada factura del día (una o

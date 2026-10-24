@@ -41,6 +41,7 @@
  * Dependencias: COL_RUTA, COL_DETTE_E (core/constants.js)
  */
 import { COL_RUTA, COL_DETTE_E } from '../core/constants.js';
+import { ent1Label } from './ruteo-status.js';
 
 const str = v => String(v ?? '').trim();
 const asDetteType = d => (/^\d+$/.test(d) ? Number(d) : d);
@@ -59,12 +60,9 @@ function pdfDestinosByRuta(pdfData) {
   return byRuta;
 }
 
-/** Renumera ENT1 de una ruta: ENT1, 2, 3…; la última numérica lleva "U". @private */
+/** Renumera ENT1 de una ruta (regla única en ruteo-status.js#ent1Label). @private */
 function renumberEnt(rows) {
-  return rows.map((row, i) => ({
-    ...row,
-    ENT1: i === 0 ? 'ENT1' : (i === rows.length - 1 ? `${i + 1}U` : i + 1)
-  }));
+  return rows.map((row, i) => ({ ...row, ENT1: ent1Label(i, rows.length) }));
 }
 
 /** Parte las filas en bloques contiguos por RUTA, en orden: Array<[ruta, filas]>. @private */

@@ -23,11 +23,14 @@
  *     encabezado; si está vacío, se usa la UNIDAD.
  *   - Horas (LLEGADA/SOLICITUD/FORMADO/ENRAMPE/RETIRO/CASETA):
  *     fecha = FECHA − (hora > 0.91666 ? 1 : 0) + hora  (una hora pasada
- *     de las 22:00 pertenece al día anterior). Vacío → FECHA 00:00,
- *     igual que la macro.
+ *     de las 22:00 pertenece al día anterior). Vacío → VACÍO (decisión
+ *     24-10: la macro ponía FECHA 00:00, un dato falso que además ensuciaba
+ *     RETIRO VS DESPACHO — 7108 del 23-10).
  *   - SETEO: "3°C" según TIF/FITO → TIF|TIF/FITO=REFRI,
- *     FITO|N/A|DIC=FRUTA, otro=REVISAR; "-22°C" = CONGE.
- *   - ENT1: ENT1, 2, 3… por ruta; el último numérico lleva "U".
+ *     FITO|N/A|NA|DIC=FRUTA, otro=REVISAR; "-22°C" = CONGE. "NA" sin
+ *     diagonal = N/A (decisión 24-10; la macro daba REVISAR: 6406 del 22-10).
+ *   - ENT1: "ENT1", "2", "3"… por ruta; el último lleva "U". Siempre TEXTO,
+ *     igual que la macro (23-10: 92 filas salían como número). Ver ent1Label().
  *
  * DIFERENCIA INTENCIONAL con la macro: la macro rellenaba cualquier
  * celda vacía con la de arriba (podía copiar el T.E de OTRA ruta). Aquí
@@ -70,6 +73,15 @@ export function isRuteoStatusHeader(headerRow) {
 }
 
 /**
+ * Etiqueta ENT1 de la entrega i (0-based) de `total`: "ENT1", "2", …, "nU".
+ * Única fuente de la regla — también la usa desco.js al renumerar.
+ */
+export function ent1Label(i, total) {
+  if (i === 0) return 'ENT1';
+  return i === total - 1 ? `${i + 1}U` : String(i + 1);
+}
+
+/**
  * FECHA operativa: la trae el nombre del archivo ("RUTEO 20-10-2026.xlsx")
  * y si no, hoy. La macro usaba TODAY() a ciegas.
  * @returns {{date: Date, fromName: boolean}}
@@ -84,9 +96,9 @@ export function resolveFecha(fileName, now = new Date()) {
   return { date: new Date(now.getFullYear(), now.getMonth(), now.getDate()), fromName: false };
 }
 
-/** Hora (fracción de día) → Date ajustado por cruce de medianoche (regla en utils/date.js). */
+/** Hora (fracción de día) → Date ajustado por cruce de medianoche (regla en utils/date.js); vacía → ''. */
 function adjustedTime(fecha, v) {
-  return operativeDateTime(fecha, isNum(v) ? v : 0);
+  return isNum(v) ? operativeDateTime(fecha, v) : '';
 }
 
 function mapSeteo(seteo, tifFito) {
@@ -95,7 +107,7 @@ function mapSeteo(seteo, tifFito) {
   if (s !== '3°C') return seteo;
   switch (String(tifFito ?? '').trim().toUpperCase()) {
     case 'TIF': case 'TIF/FITO': return 'REFRI';
-    case 'FITO': case 'N/A': case 'DIC': return 'FRUTA';
+    case 'FITO': case 'N/A': case 'NA': case 'DIC': return 'FRUTA';
     default: return 'REVISAR';
   }
 }
@@ -163,11 +175,9 @@ export function flattenRuteoStatus(grid, { fecha }) {
     };
     const entregas = g.body.filter(r => isNum(r[C.DETTE]) && isCajas(r[C.CAJAS]));
     entregas.forEach((r, i) => {
-      const last = i === entregas.length - 1;
-      const n = i + 1;
       out.push({
         FECHA: new Date(fecha), DETTE: r[C.DETTE], CAJAS: r[C.CAJAS],
-        ENT1: n === 1 ? 'ENT1' : (last ? `${n}U` : n),
+        ENT1: ent1Label(i, entregas.length),
         ...base, _FECHA_DMY: { ...fechaDMY }, ...(g.hub ? { _HUB_MARCA: g.hub } : {})
       });
     });
